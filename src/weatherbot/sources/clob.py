@@ -1,33 +1,50 @@
 """Polymarket CLOB price history.
 
-This is the *market's own opinion*, and it is the only data source in the
-project that lets us ask the question that actually matters: not "was the model
-right?" but "was the model right about something the market had wrong?"
+This is the market's own opinion, and the only source here that answers the
+question that actually decides whether any of this is worth trading: not "was
+the model right?" but "was the model right about something the price had wrong?"
 
-Everything else here is a consequence of one measured fact:
+Four properties of the endpoint drive this module, and three of them are traps.
 
-    Price history is retained for a rolling ~31 days and then deleted.
+**`interval=max` silently truncates settled markets.** This is the important
+one. On a market resolved more than roughly a month ago it returns an empty
+history, and on a recent one it returns a degraded ~10-minute series no matter
+what `fidelity` you ask for. Reading that at face value makes it look as though
+Polymarket deletes price history after ~31 days. It does not. The same tokens
+return full 1-minute data when queried with explicit `startTs`/`endTs`:
 
-Probing settled London markets on 2026-08-01 returned, for *every* bucket:
+    market day    interval=max      startTs/endTs
+    2025-06-10       0 points      6599 points, 60 s steps
+    2025-12-05       0 points      3357 points, 60 s steps
+    2026-05-01       0 points      3514 points, 60 s steps
+    2026-07-15     406 points      4058 points, 60 s steps
 
-    2025-06-10   0 points        2026-07-01    2 points (22:00Z, 23:00Z)
-    2025-12-05   0 points        2026-07-10  715 points
-    2026-05-01   0 points        2026-07-15  737 points
+So this module never uses `interval`. Note that passing both is worse than
+useless: `interval` silently wins and you get the truncated series back while
+believing you asked for a window.
 
-A market with real settled volume returning zero points across all eleven
-buckets is pruning, not absence of trading. So this source has the same
-property as the ensemble archive -- **a day not harvested is a day lost
-permanently** -- except it is worse, because the window is 31 days rather than
-4, which makes it easy to believe there is no urgency until a month has
-silently rolled off.
+**Windows are capped at 15 days** (21600 minutes). A market's whole life is
+about a week, so one window covers it, but the cap is enforced here rather than
+discovered as an opaque `invalid filters` error.
 
-Resolution: the API accepts a `fidelity` parameter, but 1, 5 and 10 all return
-the same ~10-minute series (measured step 579-586 s). 10 minutes is the floor;
-asking for finer is not an error, it just does nothing.
+**`p` is the midpoint of the book, not a traded price.** Verified against
+`/midpoint`, `/last-trade-price` and `/price` across 16 live markets: `p` equals
+`(best_bid + best_ask)/2` exactly, including on wide books where the last trade
+sat far from the mid. Two consequences that matter more than they sound: the
+series moves when the book moves even with zero volume, and it is unweighted by
+size, so a one-share quote at the touch moves it as much as a ten-thousand-share
+one. It is evidence about belief, not about what you could have transacted.
 
-Leakage note: unlike a forecast record, a price point is self-anchoring. Its
-own timestamp is the moment it was knowable, so no separate harvest anchor is
-needed to use it safely.
+**There is no public historical order book.** `/book` is current-state only, the
+Goldsky `Orderbook` entity is aggregate volume counters rather than depth, and
+the complementary NO series carries no extra information (mid_YES + mid_NO - 1
+was exactly 0 in 360/360 sampled minutes). The historical spread is simply not
+recoverable, which is the binding constraint on any maker backtest built on
+this data.
+
+Leakage note: unlike a forecast record, a price point is self-anchoring. Its own
+timestamp is the moment it was knowable, so no separate harvest anchor is needed
+to use it safely.
 """
 
 from __future__ import annotations
@@ -35,7 +52,7 @@ from __future__ import annotations
 import json
 import time
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import date, datetime, time as clock, timedelta, timezone
 
 import requests
 
@@ -43,12 +60,16 @@ from weatherbot.config import CLOB_API
 
 PRICES_HISTORY_URL = f"{CLOB_API}/prices-history"
 
-# 10 minutes is the finest the endpoint actually honours; see module docstring.
-FINEST_FIDELITY_MINUTES = 10
+# The endpoint honours 1-minute sampling when given an explicit window.
+FINEST_FIDELITY_MINUTES = 1
 
-# Retention measured on 2026-08-01. Treated as a floor for planning, not a
-# guarantee -- it is undocumented and could change without notice.
-RETENTION_DAYS = 31
+# Hard server limit on startTs..endTs, measured by binary search: 21600 minutes
+# accepted, 21601 rejected.
+MAX_WINDOW_MINUTES = 21600
+
+# A London market opens ~2 days ahead. Seven days back is comfortable margin and
+# still one window, well inside the cap.
+LOOKBACK_DAYS = 7
 
 
 class ClobError(RuntimeError):
@@ -69,39 +90,55 @@ class PricePoint:
 
 @dataclass(frozen=True)
 class OutcomeSeries:
-    """The price path of a single bucket's YES token."""
+    """The midpoint path of a single bucket's YES token.
+
+    `points` holds only the instants at which the price *changed*. On a quiet
+    book that is around 7% of the 1-minute samples, so storing changes rather
+    than samples cuts the archive tenfold at zero information loss -- but only
+    because `first_ts`/`last_ts` record the true extent of coverage separately.
+    Without them a flat tail would be indistinguishable from a series that
+    stopped updating, and `price_at` would wrongly report it stale.
+    """
 
     bucket_label: str
     token_id: str
     points: tuple[PricePoint, ...]
+    first_ts: int | None = None
+    last_ts: int | None = None
 
     def __len__(self) -> int:
         return len(self.points)
 
     @property
-    def first_ts(self) -> int | None:
-        return self.points[0].ts if self.points else None
-
-    @property
-    def last_ts(self) -> int | None:
-        return self.points[-1].ts if self.points else None
+    def covers(self) -> tuple[int, int] | None:
+        """The interval this series is evidence about."""
+        if not self.points:
+            return None
+        start = self.first_ts if self.first_ts is not None else self.points[0].ts
+        end = self.last_ts if self.last_ts is not None else self.points[-1].ts
+        return start, end
 
     def price_at(self, ts: int, *, max_staleness: int = 3600) -> float | None:
-        """Last price at or before `ts`, or None if there isn't a fresh one.
+        """Midpoint at `ts`, or None if we cannot honestly claim to know it.
 
-        A backtest must never read a price from the future, so this walks
-        backwards only. `max_staleness` rejects a quote so old it is no longer
-        evidence of anything -- without it, a market that stopped trading would
-        appear to hold a firm opinion indefinitely.
+        Walks backwards only -- a backtest that reads a price from the future is
+        both silent and fatal. Returns None before coverage starts, after it
+        ends, or when the last change is older than `max_staleness` *and* the
+        series had stopped being observed.
         """
+        span = self.covers
+        if span is None:
+            return None
+        start, end = span
+        if ts < start or ts > end + max_staleness:
+            return None
+
         best: PricePoint | None = None
         for point in self.points:
             if point.ts > ts:
                 break
             best = point
-        if best is None or ts - best.ts > max_staleness:
-            return None
-        return best.price
+        return best.price if best is not None else None
 
 
 def token_ids(market: dict) -> tuple[str, str] | None:
@@ -121,20 +158,57 @@ def token_ids(market: dict) -> tuple[str, str] | None:
     return str(raw[0]), str(raw[1])
 
 
+def market_window(day: date, *, lookback_days: int = LOOKBACK_DAYS) -> tuple[int, int]:
+    """UTC window covering a market day's whole tradeable life."""
+    start = datetime.combine(day - timedelta(days=lookback_days), clock.min, timezone.utc)
+    end = datetime.combine(day + timedelta(days=1), clock.min, timezone.utc)
+    minutes = int((end - start).total_seconds() // 60)
+    if minutes > MAX_WINDOW_MINUTES:
+        raise ValueError(
+            f"window of {minutes} minutes exceeds the server cap of "
+            f"{MAX_WINDOW_MINUTES}; reduce lookback_days"
+        )
+    return int(start.timestamp()), int(end.timestamp())
+
+
+def to_change_points(rows: list[tuple[int, float]]) -> list[PricePoint]:
+    """Keep only the instants at which the price changed."""
+    out: list[PricePoint] = []
+    last: float | None = None
+    for ts, price in rows:
+        if price != last:
+            out.append(PricePoint(ts=ts, price=price))
+            last = price
+    return out
+
+
 def fetch_price_history(
     token_id: str,
+    start_ts: int,
+    end_ts: int,
     *,
     fidelity: int = FINEST_FIDELITY_MINUTES,
-    timeout: int = 30,
+    timeout: int = 60,
     retries: int = 3,
-) -> list[PricePoint]:
-    """Fetch the full retained price path for one outcome token.
+) -> tuple[list[PricePoint], int | None, int | None]:
+    """Fetch one token's midpoint path over an explicit window.
 
-    Returns an empty list for a token whose history has aged out -- that is a
-    normal, expected outcome for anything older than the retention window, not
-    an error worth raising.
+    Returns `(change_points, first_ts, last_ts)`. An empty result means the
+    token genuinely never quoted in the window -- it does not mean the history
+    expired, because with an explicit window nothing expires.
     """
-    params = {"market": token_id, "interval": "max", "fidelity": str(fidelity)}
+    minutes = (end_ts - start_ts) // 60
+    if minutes > MAX_WINDOW_MINUTES:
+        raise ValueError(f"window of {minutes} minutes exceeds cap {MAX_WINDOW_MINUTES}")
+
+    # `interval` is deliberately absent: if sent alongside a window it wins, and
+    # returns the truncated series instead.
+    params = {
+        "market": token_id,
+        "startTs": str(start_ts),
+        "endTs": str(end_ts),
+        "fidelity": str(fidelity),
+    }
     last_error: Exception | None = None
 
     for attempt in range(retries):
@@ -145,13 +219,14 @@ def fetch_price_history(
                 continue
             response.raise_for_status()
             history = response.json().get("history") or []
-            points = [
-                PricePoint(ts=int(row["t"]), price=float(row["p"]))
-                for row in history
-                if row.get("t") is not None and row.get("p") is not None
-            ]
-            points.sort(key=lambda p: p.ts)
-            return points
+            rows = sorted(
+                (int(r["t"]), float(r["p"]))
+                for r in history
+                if r.get("t") is not None and r.get("p") is not None
+            )
+            if not rows:
+                return [], None, None
+            return to_change_points(rows), rows[0][0], rows[-1][0]
         except (requests.RequestException, ValueError, KeyError) as exc:
             last_error = exc
             if attempt < retries - 1:
@@ -162,24 +237,32 @@ def fetch_price_history(
 
 def fetch_event_prices(
     event: dict,
+    day: date,
     *,
     fidelity: int = FINEST_FIDELITY_MINUTES,
-    polite_delay: float = 0.15,
+    lookback_days: int = LOOKBACK_DAYS,
+    polite_delay: float = 0.1,
 ) -> list[OutcomeSeries]:
-    """Fetch every bucket's YES price path for one Gamma event."""
+    """Fetch every bucket's midpoint path for one market day."""
+    start_ts, end_ts = market_window(day, lookback_days=lookback_days)
     out: list[OutcomeSeries] = []
+
     for index, market in enumerate(event.get("markets") or []):
         ids = token_ids(market)
         if ids is None:
             continue
         if index and polite_delay:
             time.sleep(polite_delay)
-        points = fetch_price_history(ids[0], fidelity=fidelity)
+        points, first_ts, last_ts = fetch_price_history(
+            ids[0], start_ts, end_ts, fidelity=fidelity
+        )
         out.append(
             OutcomeSeries(
                 bucket_label=str(market.get("groupItemTitle") or ""),
                 token_id=ids[0],
                 points=tuple(points),
+                first_ts=first_ts,
+                last_ts=last_ts,
             )
         )
     return out

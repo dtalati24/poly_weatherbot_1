@@ -48,10 +48,15 @@ src/weatherbot/
   observation.py         Shared observation record used by all sources.
   resolve.py             Reconstructs the settlement value. Candidate rule
                          interpretations are enumerated, not assumed.
+  fees.py                Fee and rebate arithmetic. The published formula, not
+                         the one assumed in PLAN.md.
+  market.py              Archived prices -> the market's own distribution.
+  priceharvest.py        Price archive: one record per market day.
   sources/
     wunderground.py      The settlement source. Train and validate on this.
     iem.py               Raw METAR archive (decades of history, free).
     polymarket.py        Gamma API: settled markets, bucket parsing.
+    clob.py              Order book API: 1-minute historical midpoints.
   analysis/
     cadence.py           Observation cadence and truncation analysis.
 
@@ -59,6 +64,9 @@ scripts/
   validate_resolve.py    Phase 0 gate: replay every settled market.
   compare_sources.py     Quantify Weather Underground vs raw METAR divergence.
   analyze_cadence.py     Reporting cadence, curfew and truncation checks.
+  harvest_prices.py      Archive quoted prices (--all backfills everything).
+  analyze_prices.py      Phase 4 gate: does the model beat the market?
+  blend_significance.py  Does a model+market blend survive out-of-sample?
 
 tests/                   Unit tests for the correctness-critical paths.
 docs/                    Plan and findings.
@@ -100,7 +108,8 @@ first run of any script is the slow one.
 |---|---|---|
 | Weather Underground | **Settlement source.** Train and validate here | Public JSON endpoint behind the History page |
 | IEM ASOS archive | Long raw-METAR history; divergence signal | Free, no key |
-| Polymarket Gamma API | Settled markets, buckets, volumes | Free, no key |
+| Polymarket Gamma API | Settled markets, buckets, volumes, fee schedule | Free, no key |
+| Polymarket CLOB API | **The benchmark.** 1-minute historical midpoints per bucket | Free, no key — use `startTs`/`endTs`, never `interval` |
 | Open-Meteo ensembles | ECMWF IFS/AIFS, GEFS, ICON, MOGREPS-G — 8 models | Free, no key |
 | Open-Meteo historical forecast | Lead-resolved deterministic backfill to 2022 | Free, no key |
 | Met Office IMPROVER spot percentiles | Calibrated Tmax distribution, MOGREPS-UK blended, ~305 m from EGLC | Free, **no key** (AWS Open Data) |
@@ -138,14 +147,47 @@ the window outcomes land and beats uniform by 12.9% using no weather data at all
 ahead, so that is exactly the tradeable region. See
 [`docs/PHASE3_MODEL_B.md`](docs/PHASE3_MODEL_B.md).
 
-Two operational findings from it:
+One operational finding that survives: **beyond four days the forecast is worse
+than knowing nothing.** At lead 5 the structural baseline wins by 14%, so quote
+positional climatology out there.
 
-- **Beyond four days, the forecast is worse than knowing nothing.** At lead 5
-  the structural baseline wins by 14%. Quote positional climatology out there.
-- **The raw forecast runs ~0.5 °C cold for EGLC settlement at every lead** — a
-  fixed grid-vs-station offset, not a skill problem. Notably the market's own
-  bucket window sits +0.41 °C cold, which is consistent with Polymarket
-  centring on an uncorrected forecast. That would make the correction the edge.
+> Phase 3 also claimed the raw forecast runs ~0.5 °C cold *at every lead and
+> always*, and that the market had inherited that bias — which would have made
+> correcting it the edge. **Both claims are false.** Phase 4 disproved them
+> against real prices; see below.
 
-**Next:** Model C (situational uncertainty from ensemble spread) and Model D
-(intraday nowcast, likely the largest remaining edge).
+**Phase 4 — the reality check: the model does not beat the market.** Scored
+against the market's own midpoints, at the same instant, on the same buckets,
+over 382 settled markets. See [`docs/PHASE4_PRICES.md`](docs/PHASE4_PRICES.md).
+
+| Lead | n | market | best model | model vs market |
+|---|---|---|---|---|
+| 1 day | 382 | **0.06731** | 0.08137 | **−20.9%** |
+| 2 days | 300 | **0.07971** | 0.09414 | **−18.1%** |
+
+Every earlier score compared the model to a statistical baseline, which answers
+"does it know something about the weather". It does. It does not know anything
+the price does not: the market is ~20% sharper at both tradeable leads, a blend
+of the two adds nothing that survives out-of-sample, and the market's implied
+centre is within 0.1 °C of the observed value while the raw forecast is not.
+
+Three things this corrects:
+
+- **The forecast bias is non-stationary**, not fixed. Mean error at lead 1 in
+  July was +0.97 °C (2024), +0.17 (2025), −0.49 (2026) — a 1.5 °C swing visible
+  in two independent models. Fitting it on a trailing window does not close the
+  gap either.
+- **Price history does not expire.** An earlier commit here claimed a ~31-day
+  retention cliff. That was an artifact of querying `interval=max`; with an
+  explicit `startTs`/`endTs` window the full 1-minute history is available. The
+  archive now holds **536 market days at 1-minute resolution**, back to the
+  first London market.
+- **The fee formula was wrong.** `shares × rate × [p(1−p)]^exponent`, not
+  `rate × min(p, 1−p) × shares`. The no-trade band protecting a resting quote is
+  1.25¢ at the midpoint, half what the plan assumed.
+
+**Next:** the benchmark is now RPS against the market at the same instant —
+0.06731 at lead 1 is the number to beat. Model D (intraday nowcast) is the best
+remaining candidate, because it is the only one whose information is *timely*
+rather than merely accurate. Then Model C (ensemble spread) and multi-model
+blending. The quoter waits until something beats the mid.

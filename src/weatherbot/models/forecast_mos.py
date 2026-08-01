@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
+from datetime import date, timedelta
 from typing import Sequence
 
 from weatherbot.models.distribution import (
@@ -140,3 +141,83 @@ class LeadIndexedMOS:
 
     def predict(self, lead: int, forecast_max: float) -> TemperatureDistribution:
         return self.model_for(lead).predict(forecast_max)
+
+
+class RollingMOS:
+    """Model B', refitting the error distribution on a trailing window.
+
+    Model B fits one error distribution over all available history and reports
+    a bias of about +0.5 C, stable across leads. The stability across *lead* is
+    real; the implied stability across *time* is not, and taking it for a fixed
+    grid-vs-station offset was wrong. Mean (observed - forecast) at lead 1 for
+    ECMWF in July:
+
+        July 2024   +0.968
+        July 2025   +0.165
+        July 2026   -0.490
+
+    A swing of nearly 1.5 C -- and it is directional, not noise. So an
+    all-history fit is not estimating a constant, it is averaging a moving
+    quantity and reporting a number that describes no particular year. Applied
+    to July 2026 it corrects by +0.5 C when the truth wants -0.5 C, an error of
+    about one full market bucket.
+
+    This refits on the `window_days` immediately before the day being predicted,
+    so the correction tracks the current regime. The cost is variance: a shorter
+    window is more current and noisier. `window_days` is the whole trade-off and
+    should be chosen by held-out score, not by taste.
+
+    The window is strictly *before* the target day, so this cannot see the day
+    it is predicting.
+    """
+
+    def __init__(
+        self,
+        window_days: int = 180,
+        config: MOSConfig | None = None,
+        min_pairs: int = 45,
+    ) -> None:
+        self.window_days = window_days
+        self.config = config or MOSConfig()
+        self.min_pairs = min_pairs
+        self._history: list[tuple[date, float, int]] = []
+        self._cache: dict[date, ForecastMOS] = {}
+
+    def fit_history(
+        self, dated_pairs: Sequence[tuple[date, float, int]]
+    ) -> "RollingMOS":
+        """Supply (day, forecast daily max, observed settled value) triples."""
+        self._history = sorted(dated_pairs)
+        self._cache.clear()
+        return self
+
+    def model_as_of(self, as_of: date) -> ForecastMOS | None:
+        """Fit on the trailing window ending the day before `as_of`.
+
+        Returns None when the window is too thin to fit, which the caller must
+        handle -- silently widening the window would reintroduce exactly the
+        stale-regime problem this class exists to avoid.
+        """
+        if as_of in self._cache:
+            return self._cache[as_of]
+
+        start = as_of - timedelta(days=self.window_days)
+        pairs = [
+            (forecast, observed)
+            for day, forecast, observed in self._history
+            if start <= day < as_of
+        ]
+        if len(pairs) < self.min_pairs:
+            return None
+
+        model = ForecastMOS(self.config)
+        # ForecastMOS enforces its own 30-pair floor; min_pairs may be higher.
+        model.fit(pairs)
+        self._cache[as_of] = model
+        return model
+
+    def predict(
+        self, as_of: date, forecast_max: float
+    ) -> TemperatureDistribution | None:
+        model = self.model_as_of(as_of)
+        return None if model is None else model.predict(forecast_max)

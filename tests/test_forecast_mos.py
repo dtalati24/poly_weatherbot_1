@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pathlib
 import sys
-from datetime import date
+from datetime import date, timedelta
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "src"))
 
@@ -20,6 +20,7 @@ from weatherbot.models.forecast_mos import (  # noqa: E402
     ForecastMOS,
     LeadIndexedMOS,
     MOSConfig,
+    RollingMOS,
 )
 
 
@@ -159,3 +160,73 @@ class TestLeadIndexedMOS:
         config = MOSConfig(kernel_sigma=1.5)
         model = LeadIndexedMOS(config).fit_lead(1, biased_pairs())
         assert model.model_for(1).config.kernel_sigma == 1.5
+
+
+def dated_pairs(start: date, n: int, bias: float, spread: float = 1.0):
+    """Dated triples with a known bias, one per day from `start`."""
+    import math
+
+    out = []
+    for i in range(n):
+        forecast = 15.0 + 8.0 * math.sin(i / 9.0)
+        noise = spread * math.sin(i * 2.7)
+        day = start + timedelta(days=i)
+        out.append((day, forecast, int(round(forecast + bias + noise))))
+    return out
+
+
+class TestRollingMOS:
+    def test_tracks_a_regime_change_the_pooled_fit_would_average_away(self):
+        """The whole point: a bias that flips sign partway through history."""
+        cold = dated_pairs(date(2025, 1, 1), 200, bias=+1.5)
+        warm = dated_pairs(date(2025, 7, 20), 200, bias=-1.5)
+
+        rolling = RollingMOS(window_days=120).fit_history(cold + warm)
+        recent = rolling.model_as_of(date(2026, 2, 1))
+        assert recent is not None
+        assert recent.mean_error < -0.5, "must follow the recent regime, not the mean"
+
+        pooled = ForecastMOS().fit([(f, o) for _, f, o in cold + warm])
+        assert abs(pooled.mean_error) < abs(recent.mean_error), (
+            "the pooled fit should sit near zero, describing neither regime"
+        )
+
+    def test_recovers_a_stable_bias(self):
+        rolling = RollingMOS(window_days=120).fit_history(
+            dated_pairs(date(2025, 1, 1), 300, bias=0.5)
+        )
+        assert rolling.model_as_of(date(2025, 10, 1)).mean_error == pytest.approx(
+            0.5, abs=0.25
+        )
+
+    def test_never_sees_the_day_it_predicts(self):
+        history = dated_pairs(date(2025, 1, 1), 100, bias=0.0)
+        # One wildly biased day, on the as-of date itself.
+        history.append((date(2025, 4, 11), 20.0, 60))
+        rolling = RollingMOS(window_days=365, min_pairs=40).fit_history(history)
+        model = rolling.model_as_of(date(2025, 4, 11))
+        assert model.mean_error < 1.0, "the as-of day leaked into the fit"
+
+    def test_thin_window_returns_none_rather_than_widening(self):
+        rolling = RollingMOS(window_days=10).fit_history(
+            dated_pairs(date(2025, 1, 1), 300, bias=0.5)
+        )
+        assert rolling.model_as_of(date(2025, 6, 1)) is None
+        assert rolling.predict(date(2025, 6, 1), 20.0) is None
+
+    def test_predict_returns_a_distribution_when_the_window_is_full(self):
+        rolling = RollingMOS(window_days=150).fit_history(
+            dated_pairs(date(2025, 1, 1), 300, bias=0.5)
+        )
+        dist = rolling.predict(date(2025, 9, 1), 22.0)
+        assert dist is not None
+        assert sum(dist.probabilities) == pytest.approx(1.0)
+
+    def test_refits_as_the_as_of_date_moves(self):
+        history = dated_pairs(date(2025, 1, 1), 150, bias=+2.0) + dated_pairs(
+            date(2025, 6, 1), 150, bias=-2.0
+        )
+        rolling = RollingMOS(window_days=90).fit_history(history)
+        early = rolling.model_as_of(date(2025, 5, 1)).mean_error
+        late = rolling.model_as_of(date(2025, 10, 1)).mean_error
+        assert early > 1.0 and late < -1.0

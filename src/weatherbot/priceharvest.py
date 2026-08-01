@@ -1,19 +1,20 @@
-"""Archive quoted prices before they are deleted.
+"""Archive quoted prices, one record per market day.
 
-Records are keyed by **market day**, not by harvest slot, and that difference
-matters. A forecast record is a snapshot of an opinion held at one instant, so
-each harvest is a distinct object worth keeping. A price record is a *path*:
-harvesting the same market day twice returns overlapping views of one underlying
-series, and what we want is the union of everything we have ever seen.
+Records are keyed by market day rather than by harvest slot, because a price
+record is a *path* rather than a snapshot: harvesting the same day twice
+returns two views of one underlying series, and what we want is the better one.
 
-So harvests merge rather than accumulate. Merging is by `(token_id, ts)`, and a
-timestamp we have already seen is never overwritten -- the first observation
-wins, and any later disagreement is counted and surfaced rather than silently
-resolved. If the endpoint ever starts revising history, the conflict count is
-how we find out, instead of discovering it as unexplained backtest drift.
+Since `clob.fetch_event_prices` requests an explicit window covering the whole
+tradeable life of the market, a single successful harvest is already complete.
+So a re-harvest **replaces** rather than merges -- but before it does, it
+compares the incoming change-points against the stored ones and counts any
+disagreement. That counter is the early warning if the endpoint ever starts
+revising history; without it, revisions would surface much later as unexplained
+backtest drift.
 
-Retention is ~31 days (see sources/clob.py), so the practical rule is: harvest
-every settled day still inside the window, every day, forever.
+Storage is change-points plus explicit coverage bounds (see
+`clob.OutcomeSeries`). That is lossless with respect to `price_at` and about a
+tenth the size of storing every 1-minute sample.
 """
 
 from __future__ import annotations
@@ -32,7 +33,10 @@ from weatherbot.sources.polymarket import (
     slug_candidates,
 )
 
-SCHEMA_VERSION = 1
+# 1: 10-minute samples from `interval=max`, no coverage bounds. Superseded --
+#    that path silently truncated settled markets. See sources/clob.py.
+# 2: 1-minute change-points over an explicit window, with coverage bounds.
+SCHEMA_VERSION = 2
 
 
 @dataclass
@@ -44,17 +48,20 @@ class PriceHarvestResult:
     path: Path | None = None
     n_buckets: int = 0
     n_points: int = 0
-    n_new_points: int = 0
+    n_minutes: int = 0
     n_conflicts: int = 0
     bytes_written: int = 0
     skipped: bool = False
+    upgraded: bool = False
     error: str | None = None
 
     @property
     def status(self) -> str:
         if self.skipped:
             return "skipped"
-        return "ok" if self.ok else "FAILED"
+        if not self.ok:
+            return "FAILED"
+        return "upgraded" if self.upgraded else "ok"
 
 
 def archive_path(day: date, root: Path | None = None) -> Path:
@@ -86,41 +93,28 @@ def write_record(record: dict, path: Path) -> int:
     return size
 
 
-def merge_series(
-    existing: list[dict], fetched: list[clob.OutcomeSeries]
-) -> tuple[list[dict], int, int]:
-    """Union new points into the stored series.
+def count_revisions(existing: dict | None, series: list[clob.OutcomeSeries]) -> int:
+    """How many stored change-points the endpoint now reports differently.
 
-    Returns `(merged, n_new, n_conflicts)`. First observation of a timestamp
-    wins; a differing later value counts as a conflict and is discarded.
+    Only meaningful against a schema-2 record; a schema-1 record sampled a
+    different grid entirely, so comparing them would report noise as revision.
     """
-    by_token: dict[str, dict] = {entry["token_id"]: entry for entry in existing}
-    n_new = n_conflicts = 0
+    if not existing or existing.get("schema_version") != SCHEMA_VERSION:
+        return 0
 
-    for series in fetched:
-        entry = by_token.get(series.token_id)
-        if entry is None:
-            entry = {
-                "bucket_label": series.bucket_label,
-                "token_id": series.token_id,
-                "points": [],
-            }
-            by_token[series.token_id] = entry
-
-        seen = {int(p[0]): float(p[1]) for p in entry["points"]}
-        for point in series.points:
-            if point.ts in seen:
-                if seen[point.ts] != point.price:
-                    n_conflicts += 1
-                continue
-            seen[point.ts] = point.price
-            n_new += 1
-        entry["points"] = [[ts, seen[ts]] for ts in sorted(seen)]
-        # A bucket label can only improve (an empty stored label filled in).
-        if series.bucket_label and not entry.get("bucket_label"):
-            entry["bucket_label"] = series.bucket_label
-
-    return [by_token[t] for t in sorted(by_token)], n_new, n_conflicts
+    stored = {
+        entry["token_id"]: {int(ts): float(p) for ts, p in entry["points"]}
+        for entry in existing.get("series") or []
+    }
+    conflicts = 0
+    for entry in series:
+        previous = stored.get(entry.token_id)
+        if not previous:
+            continue
+        for point in entry.points:
+            if point.ts in previous and previous[point.ts] != point.price:
+                conflicts += 1
+    return conflicts
 
 
 def harvest_day(
@@ -128,26 +122,25 @@ def harvest_day(
     *,
     root: Path | None = None,
     fidelity: int = clob.FINEST_FIDELITY_MINUTES,
-    skip_if_complete: bool = False,
+    lookback_days: int = clob.LOOKBACK_DAYS,
+    skip_existing: bool = False,
 ) -> PriceHarvestResult:
-    """Harvest (and merge) the full price path for one market day.
+    """Harvest the full price path for one market day.
 
-    Never raises; failures are returned so one bad day cannot abort a sweep
-    across the whole retention window.
+    Never raises; failures are returned so one bad day cannot abort a sweep of
+    several hundred.
     """
     path = archive_path(day, root)
-    existing_record = read_record(path) if path.exists() else None
+    existing = read_record(path) if path.exists() else None
 
-    if skip_if_complete and existing_record and existing_record.get("settled"):
+    if skip_existing and existing and existing.get("schema_version") == SCHEMA_VERSION:
         return PriceHarvestResult(
             day=day,
             ok=True,
             path=path,
             skipped=True,
-            n_buckets=len(existing_record.get("series") or []),
-            n_points=sum(
-                len(s["points"]) for s in existing_record.get("series") or []
-            ),
+            n_buckets=len(existing.get("series") or []),
+            n_points=sum(len(s["points"]) for s in existing.get("series") or []),
         )
 
     event = None
@@ -165,33 +158,43 @@ def harvest_day(
         return PriceHarvestResult(day=day, ok=False, error="no market found for day")
 
     try:
-        fetched = clob.fetch_event_prices(event, fidelity=fidelity)
-    except clob.ClobError as exc:
+        fetched = clob.fetch_event_prices(
+            event, day, fidelity=fidelity, lookback_days=lookback_days
+        )
+    except (clob.ClobError, ValueError) as exc:
         return PriceHarvestResult(day=day, ok=False, error=str(exc))
 
-    existing_series = list(existing_record.get("series") or []) if existing_record else []
-    merged, n_new, n_conflicts = merge_series(existing_series, fetched)
-    total_points = sum(len(s["points"]) for s in merged)
-
-    if total_points == 0:
-        # Aged out of the retention window. Writing an empty shell would make
-        # the archive look like it holds a day it does not.
+    populated = [s for s in fetched if s.points]
+    if not populated:
         return PriceHarvestResult(
-            day=day, ok=False, n_buckets=len(merged), error="no retained history"
+            day=day, ok=False, n_buckets=len(fetched), error="no price history returned"
         )
+
+    conflicts = count_revisions(existing, populated)
+    covered = [s.covers for s in populated if s.covers]
+    minutes = (
+        (max(c[1] for c in covered) - min(c[0] for c in covered)) // 60 if covered else 0
+    )
 
     record = {
         "schema_version": SCHEMA_VERSION,
         "day": day.isoformat(),
         "slug": event.get("slug"),
-        "kind": "clob_price_history",
+        "kind": "clob_midpoint_change_points",
         "fidelity_minutes": fidelity,
-        # Every harvest that contributed, so coverage gaps stay explainable.
-        "harvests_utc": (existing_record or {}).get("harvests_utc", [])
+        "harvests_utc": (existing or {}).get("harvests_utc", [])
         + [datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")],
-        # A settled event's path is final; an unsettled one will grow.
         "settled": bool(event.get("closed")),
-        "series": merged,
+        "series": [
+            {
+                "bucket_label": s.bucket_label,
+                "token_id": s.token_id,
+                "first_ts": s.first_ts,
+                "last_ts": s.last_ts,
+                "points": [[p.ts, p.price] for p in s.points],
+            }
+            for s in sorted(populated, key=lambda s: s.token_id)
+        ],
     }
 
     size = write_record(record, path)
@@ -199,11 +202,12 @@ def harvest_day(
         day=day,
         ok=True,
         path=path,
-        n_buckets=len(merged),
-        n_points=total_points,
-        n_new_points=n_new,
-        n_conflicts=n_conflicts,
+        n_buckets=len(populated),
+        n_points=sum(len(s.points) for s in populated),
+        n_minutes=minutes,
+        n_conflicts=conflicts,
         bytes_written=size,
+        upgraded=bool(existing and existing.get("schema_version") != SCHEMA_VERSION),
     )
 
 
@@ -220,6 +224,8 @@ def load_day(day: date, root: Path | None = None) -> list[clob.OutcomeSeries]:
             points=tuple(
                 clob.PricePoint(ts=int(ts), price=float(p)) for ts, p in entry["points"]
             ),
+            first_ts=entry.get("first_ts"),
+            last_ts=entry.get("last_ts"),
         )
         for entry in record.get("series") or []
     ]

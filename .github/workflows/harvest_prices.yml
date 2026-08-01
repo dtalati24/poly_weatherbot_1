@@ -1,0 +1,90 @@
+name: Harvest prices
+
+# Unlike the forecast harvest, this one is NOT time-critical, and it is worth
+# being precise about why. CLOB price history does not expire: queried with an
+# explicit startTs/endTs window it returns full 1-minute data for markets that
+# settled over a year ago. (`interval=max` returns nothing for anything older
+# than ~31 days, which is a quirk of that parameter and briefly looked like a
+# retention cliff -- see src/weatherbot/sources/clob.py.)
+#
+# So this exists for freshness and for insurance against that behaviour
+# changing, not because a missed run loses data. A month of failed runs would
+# cost nothing but a re-run.
+#
+# It is a SEPARATE workflow from harvest.yml because the forecast harvest *is*
+# time-critical -- ensembles really do expire, in about four days -- and a
+# failure here must never be able to abort it.
+
+on:
+  schedule:
+    - cron: "30 1,13 * * *"
+  workflow_dispatch:
+    inputs:
+      days:
+        description: "How far back to sweep"
+        required: false
+        default: "32"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: harvest-prices
+  cancel-in-progress: false
+
+jobs:
+  harvest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install --quiet requests
+
+      - name: Harvest prices
+        run: python scripts/harvest_prices.py --days "${{ github.event.inputs.days || '32' }}"
+
+      - name: Commit and push archive
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          # Stage before testing the diff. New records are untracked, and
+          # `git diff` does not see untracked files -- testing first reports
+          # "no changes" on a successful harvest and exits green having
+          # committed nothing. That bug silently discarded every forecast run
+          # until it was caught; it is not repeated here.
+          git add -A archive/prices/
+
+          if git diff --cached --quiet -- archive/prices/; then
+            echo "No new price records — nothing to commit."
+            exit 0
+          fi
+
+          echo "Staged records:"
+          git diff --cached --name-only -- archive/prices/ | sed 's/^/  /'
+
+          git commit -m "Harvest prices $(date -u +'%Y-%m-%dT%H:%MZ')"
+
+          # The forecast harvester pushes to the same branch on its own
+          # schedule, so a collision is expected rather than exceptional.
+          for attempt in 1 2 3; do
+            if git push; then
+              echo "Pushed on attempt $attempt."
+              exit 0
+            fi
+            echo "Push failed (attempt $attempt); rebasing on origin."
+            git pull --rebase --autostash origin "${GITHUB_REF_NAME}"
+          done
+
+          echo "Could not push after 3 attempts." >&2
+          exit 1
