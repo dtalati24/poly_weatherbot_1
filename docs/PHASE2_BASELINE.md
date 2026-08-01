@@ -76,28 +76,62 @@ Calibration on the evaluation window is good:
 
 Only the sparse top bin is materially off.
 
-## 3. Station homogeneity — the record is not uniform
+## 3. Station homogeneity — two breaks, and a correction
 
-Building a 20-year climatology surfaced a real break in the observation record:
+> **Correction.** An earlier version of this document said the 2005–2007 record
+> was *hourly* and became half-hourly in 2008. That was wrong. The cadence has
+> been `:20/:50` for the entire archive — **0.000%** of 354,009 observations fall
+> on any other minute, in every era. The magnitude I quoted was roughly right;
+> the mechanism was not.
 
-| Period | Observations/day | Interpretation |
+**Break 1 — 2007, coverage hours (verified here).** What changed is how much of
+the day was covered, not how often it sampled:
+
+| Year | obs/day | UTC hours covered |
 |---|---|---|
-| 2005–2006 | 26.4–26.7 | hourly |
+| 2005–2006 | 26.4–26.7 | ~04:00–21:00 |
 | 2007 | 32.6 | transitional |
-| 2008–2026 | 45.9–48.0 | half-hourly |
+| 2008+ | 45.9–48.0 | full 24 h |
 
-Because the settlement variable is a **maximum over samples**, more samples
-mechanically produce a higher value. Measured directly by subsampling 2015–2024
-to hourly:
+This still matters, because the settlement variable is a **maximum over
+samples**. Restricting modern data to the old window:
 
-> Halving the sampling rate lowers the observed daily maximum by **0.10 °C** on
-> average and changes it on **10.1% of days**.
+> Restricting to 05:00–20:00 UTC lowers the observed daily maximum by
+> **0.081 °C** on average, affecting 5.5% of days — and the true maximum falls
+> outside that window on **10.15%** of days, overwhelmingly the
+> just-after-local-midnight case identified in Phase 0.
 
-Including 2005–2007 would inject a spurious warming step into the trend fit, so
-**climatology trains from 2008** (`HOMOGENEOUS_START`). The fitted trend on the
-homogeneous period is **+1.19 °C/decade**, which is high but plausible for an
-urban Docklands site; treat it as a fitted nuisance parameter, not a climate
-claim.
+**Break 2 — October 2013, an undocumented instrument change (corroborated, not
+independently reproduced).** External analysis differencing EGLC against
+Heathrow, Stansted and Gatwick places a step of ≈ **+0.47 °C** around October
+2013: dry-bulb only (dewpoint +0.08), uniform across seasons (+0.43 to +0.54)
+and across the temperature range. That is the signature of a sensor or screen
+replacement, not a relocation — a siting change would be summer-amplified. It
+appears in no AIP, Met Office or airport publication.
+
+Corroborating evidence computed here:
+
+| Training start | Fitted trend |
+|---|---|
+| 2008 | **+1.185 °C/decade** |
+| 2014 | **+0.415 °C/decade** |
+
+A step part-way through the window inflates a trend fitted across it, and
++0.415 sits far closer to the regional airport composite. **The +1.19 figure
+should not be reported as a warming estimate.**
+
+`HOMOGENEOUS_START` is therefore **2014-01-01**. `COVERAGE_BREAK_2007` is
+exposed for sensitivity testing. Note the honest limit: the neighbour-station
+differencing behind the 2013 date has **not** been reproduced in this
+repository.
+
+**Effect on the benchmark: none.** Positional climatology is unchanged at RPS
+0.11760 because it uses no temperature data. Climatology moves 0.19077 →
+0.19626, which is immaterial for a model already well behind uniform.
+
+Also flagged and not yet acted on: **2011 contains 25 days with no maximum at
+all** — the only year with missing days. Screen on reports-per-day, not just
+day presence.
 
 ## 4. Why RPS, and why normalised
 

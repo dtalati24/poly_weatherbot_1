@@ -11,6 +11,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "src"))
 import pytest  # noqa: E402
 
 from weatherbot.models.climatology import (  # noqa: E402
+    HOMOGENEOUS_START,
     ClimatologyConfig,
     ClimatologyModel,
     circular_day_distance,
@@ -123,17 +124,20 @@ class TestClimatology:
             ClimatologyModel().fit({date(2020, 1, 1): 10})
 
     def test_recovers_a_known_trend(self):
+        # Explicit start: this tests the estimator, not the default window.
         history = synthetic_history(2008, 2024, trend_per_year=0.1)
-        model = ClimatologyModel().fit(history)
+        model = ClimatologyModel().fit(history, start=date(2008, 1, 1))
         assert model.trend_c_per_decade == pytest.approx(1.0, abs=0.15)
 
     def test_no_trend_in_stationary_data(self):
-        model = ClimatologyModel().fit(synthetic_history(2008, 2024))
+        model = ClimatologyModel().fit(
+            synthetic_history(2008, 2024), start=date(2008, 1, 1)
+        )
         assert abs(model.trend_c_per_decade) < 0.2
 
     def test_trend_can_be_disabled(self):
         model = ClimatologyModel(ClimatologyConfig(apply_trend=False)).fit(
-            synthetic_history(2008, 2024, trend_per_year=0.5)
+            synthetic_history(2008, 2024, trend_per_year=0.5), start=date(2008, 1, 1)
         )
         assert model.trend_c_per_year == 0.0
 
@@ -150,8 +154,17 @@ class TestClimatology:
     def test_end_bound_excludes_evaluation_data(self):
         """Fitting on days you later score against is leakage."""
         history = synthetic_history(2008, 2024)
-        model = ClimatologyModel().fit(history, end=date(2020, 1, 1))
+        model = ClimatologyModel().fit(
+            history, start=date(2008, 1, 1), end=date(2020, 1, 1)
+        )
         assert model.n_training_days == sum(1 for d in history if d < date(2020, 1, 1))
+
+    def test_default_start_skips_the_suspected_2013_break(self):
+        history = synthetic_history(2008, 2024)
+        model = ClimatologyModel().fit(history)
+        assert model.n_training_days == sum(
+            1 for d in history if d >= HOMOGENEOUS_START
+        )
 
     def test_output_has_no_zero_bins(self):
         model = ClimatologyModel().fit(synthetic_history(2008, 2024))

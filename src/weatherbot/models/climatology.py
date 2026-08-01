@@ -11,13 +11,36 @@ Two reasons it earns its place rather than being a throwaway:
   2. **It is genuinely tradeable** on far-dated markets, where NWP has no skill,
      and it is the fallback when a live feed dies.
 
-Homogeneity: training starts at 2008 by default, not 2005. EGLC reported
-roughly hourly until 2007 (~26 observations/day) and half-hourly from 2008
-(~48/day). Because the settlement variable is a *maximum over samples*, more
-samples mechanically produce a higher value: measured on 2015-2024 data,
-halving the sampling rate lowers the observed daily maximum by 0.10 C on
-average and changes it on 10.1% of days. Including the early years would inject
-a spurious warming step into the trend fit.
+Homogeneity: the EGLC record contains two discontinuities, and training starts
+after the later one.
+
+**2007 -- coverage, not cadence (verified).** The reporting cadence has been
+:20/:50 for the entire archive; 0.000% of 354,009 observations fall on any
+other minute, in every era. What changed is *coverage hours*: 2005-2006 report
+only ~04:00-21:00 UTC (~26 obs/day), and full 24-hour reporting begins in late
+2007 (~48/day). This still matters, because the settlement variable is a
+maximum over samples: restricting modern data to 05:00-20:00 UTC lowers the
+observed daily maximum by 0.081 C on average, and the true maximum falls
+outside that window on 10.15% of days -- overwhelmingly the just-after-local-
+midnight case.
+
+**2013 -- an undocumented instrument change (corroborated, not independently
+reproduced).** External analysis differencing EGLC against Heathrow, Stansted
+and Gatwick places a step of roughly +0.47 C around October 2013, affecting
+dry-bulb but not dewpoint, uniform across seasons and across the temperature
+range -- the signature of a sensor or screen replacement rather than a
+relocation. It appears in no AIP, Met Office or airport publication.
+
+Corroborating evidence from this repository: fitting the trend from 2008
+gives +1.19 C/decade, whereas fitting from 2014 gives +0.415 C/decade. A step
+part-way through the window inflates a trend fitted across it, and +0.415 sits
+much closer to the regional airport composite. The +1.19 figure should not be
+reported as a warming estimate.
+
+Training therefore starts 2014-01-01: one homogeneous instrument generation,
+full 24-hour coverage, and consistent automated reporting. The caveat is that
+the neighbour-station differencing behind the 2013 date has not been reproduced
+here, so `COVERAGE_BREAK_2007` is exposed for sensitivity testing.
 """
 
 from __future__ import annotations
@@ -33,8 +56,13 @@ from weatherbot.models.distribution import (
     TemperatureDistribution,
 )
 
-# First full year of half-hourly reporting at EGLC. See module docstring.
-HOMOGENEOUS_START = date(2008, 1, 1)
+# First full year of 24-hour coverage. Use this to trade a suspected instrument
+# break for six extra years of data when testing sensitivity.
+COVERAGE_BREAK_2007 = date(2008, 1, 1)
+
+# Default training start: after the suspected October 2013 instrument change.
+# See the module docstring for the evidence and its limits.
+HOMOGENEOUS_START = date(2014, 1, 1)
 
 DAYS_PER_YEAR = 365.25
 
