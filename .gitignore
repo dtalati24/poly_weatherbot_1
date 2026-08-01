@@ -1,0 +1,27 @@
+# Cached API responses and downloaded observations.
+# Everything here is reproducible by re-running the scripts, and the WU cache
+# alone runs to thousands of small JSON files.
+data/*
+!data/.gitkeep
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# Environments
+.venv/
+venv/
+env/
+.env
+
+# Editors / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

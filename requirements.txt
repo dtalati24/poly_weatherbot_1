@@ -1,0 +1,9 @@
+# Phase 0 (settlement reconstruction) needs only requests.
+requests>=2.31
+
+# Used from Phase 1 onward (feature tables, model fitting).
+numpy>=1.26
+pandas>=2.0
+
+# Development
+pytest>=8.0
