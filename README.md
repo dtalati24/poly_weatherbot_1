@@ -132,5 +132,20 @@ end bucket only 5.8% of the time — so a day-of-year model piles mass on the wr
 tail. The benchmark is instead *positional* climatology, which models where in
 the window outcomes land and beats uniform by 12.9% using no weather data at all.
 
-**Next — Model B:** map real forecasts to a temperature distribution and beat
-RPS 0.11760.
+**Phase 3 — Model B: beats the benchmark.** A lead-indexed forecast MOS scores
+**RPS 0.07261 at lead 1** and **0.08566 at lead 2** on the same held-out markets
+— **+38.3%** and **+27.2%** over the benchmark. Markets are created ~2 days
+ahead, so that is exactly the tradeable region. See
+[`docs/PHASE3_MODEL_B.md`](docs/PHASE3_MODEL_B.md).
+
+Two operational findings from it:
+
+- **Beyond four days, the forecast is worse than knowing nothing.** At lead 5
+  the structural baseline wins by 14%. Quote positional climatology out there.
+- **The raw forecast runs ~0.5 °C cold for EGLC settlement at every lead** — a
+  fixed grid-vs-station offset, not a skill problem. Notably the market's own
+  bucket window sits +0.41 °C cold, which is consistent with Polymarket
+  centring on an uncorrected forecast. That would make the correction the edge.
+
+**Next:** Model C (situational uncertainty from ensemble spread) and Model D
+(intraday nowcast, likely the largest remaining edge).
