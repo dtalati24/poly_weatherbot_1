@@ -49,7 +49,9 @@ Net bias is a function of diurnal curve flatness, obs cadence, and cloudiness. *
 >   already emits whole degrees. The residual discretization question is now about
 >   *sampling* (max over 48 half-hourly points), not rounding.
 > - **0.5 PASSED.** 503/504 pinned settlements reproduced over 535 markets.
-> - **0.6 still open.** Fee formula remains assumed, not verified.
+> - **0.6 ANSWERED (Phase 4), and the assumption was wrong.** The fee is
+>   `shares × rate × [p(1−p)]^exponent`, not `rate × min(p, 1−p) × shares`.
+>   The no-trade band at the midpoint is 1.25¢, half what was assumed.
 >
 > **Unanticipated finding:** the settlement source is *mutable*. Polymarket
 > settles against Weather Underground as it stood at resolution time, and WU's
@@ -63,7 +65,7 @@ Net bias is a function of diurnal curve flatness, obs cadence, and cloudiness. *
 | 0.3 | **Does EGLC stop reporting during airport closure hours?** EGLC has a noise curfew (restricted Sat afternoon → Sun morning). | Count obs by hour × day-of-week over 5 years | **If Saturday obs stop before the typical 15:00–16:00 local peak, Saturday markets settle systematically low.** That would be an enormous edge on 1/7 of all markets. Unverified hypothesis — cheap to check, high payoff |
 | 0.4 | Empirical distribution of `Y − true_continuous_Tmax` | Compare METAR-derived `Y` vs high-frequency/hourly Met Office obs or ERA5-corrected | Gives the discretization operator used in Model C2 |
 | 0.5 | Does our `resolve()` reproduce ≥30 already-resolved Polymarket London markets? | Backtest against Gamma API resolved markets | **Gate: do not proceed until 100% match** |
-| 0.6 | Exact fee formula | Confirm `fee = 0.05 × min(p, 1−p) × shares` for exponent=1 | Determines the no-trade band and rebate income. **Assumed, must verify** |
+| 0.6 | Exact fee formula | ~~Confirm `fee = 0.05 × min(p, 1−p) × shares`~~ | **ANSWERED in Phase 4, and the assumption was wrong.** Real formula: `shares × rate × [p(1−p)]^exponent`. Makers pay zero. `maker_base_fee`/`taker_base_fee` are inert (1000 everywhere); read gamma's `feeSchedule` |
 
 **Deliverable:** `resolve(date) -> int`, validated against every settled market on
 record. Delivered: 503/504 (99.80%) using raw METAR, with the single residual
@@ -205,7 +207,19 @@ Royal Docks, ~6 m elevation, water on both sides, dense East London. Hypotheses 
 The market's own mids summed to **~1.03** on Aug 2. Participants quote buckets independently; a model that emits a coherent normalized 11-vector prices relative value *across* buckets, which is a different and less crowded game than being right about the point forecast.
 
 **6. Fee-structure awareness.**
-`5% taker-only, exponent 1, 25% maker rebate`. If the formula is `0.05 × min(p, 1−p) × shares`, a taker at 0.50 pays ~2.5¢/share — an enormous no-trade band that *protects* resting maker quotes, while near-tail buckets (p≈0.05) cost only ~0.25¢. Correctly modelling where the fee band makes you unhittable vs. where you'll get run over is worth more than a small amount of forecast skill.
+`5% taker-only, exponent 1, 25% maker rebate`. Correctly modelling where the fee band makes you unhittable vs. where you'll get run over is worth more than a small amount of forecast skill.
+
+> **Correction (Phase 4).** This section originally assumed
+> `fee = 0.05 × min(p, 1−p) × shares` and concluded that a ~2.5¢ midpoint fee
+> creates "an enormous no-trade band that *protects* resting maker quotes."
+> The published formula is `shares × rate × [p(1−p)]^exponent` — a product, not
+> a minimum. The old form overstates the fee everywhere by `1/(1−p)`: **2× at
+> the midpoint**, converging to correct deep in the tails.
+>
+> The real midpoint band is **1.25¢**, not 2.5¢, so a resting quote is **half as
+> protected** as this section claimed. The tail figure was roughly right
+> (~0.24¢ at p≈0.05), but tails were never the protected part. See
+> `src/weatherbot/fees.py`.
 
 ### Honest assessment of the disadvantages
 
@@ -243,7 +257,9 @@ Station:          EGLC (London City Airport), 51.505°N, 0.055°E, ~6 m
 Resolution:       Wunderground, EGLC, whole °C, max over all times on date
 Outcomes:         11 ordered buckets, edges shift seasonally
 Rewards:          max_spread 4.5¢, min_size $20–100/outcome, ~$100/day/event
-Fees:             taker_only, rate 0.05, exponent 1, rebate_rate 0.25  [VERIFY formula]
+Fees:             taker_only, rate 0.05, exponent 1, rebate_rate 0.25
+                  fee = shares × rate × [p(1−p)]^exponent   [VERIFIED Phase 4]
+                  makers pay 0; band is 1.25¢ at p=0.5, 0.24¢ at p=0.05
 Min resting time: 3.5 s to qualify for rewards (rule effective 17 Mar 2026)
 Observed size:    Jul 30 2026 market — $151k volume, $55k liquidity
 ```

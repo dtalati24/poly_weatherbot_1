@@ -163,8 +163,13 @@ did $151k volume. Fees are `taker_only, rate 0.05, exponent 1, rebate_rate 0.25`
 event at 4.5¢ max spread and $20–100 min size, concentrated in the near-the-money
 buckets.
 
-> Fee formula still **unverified**: assumed `0.05 × min(p, 1−p) × shares`.
-> Confirm before sizing anything.
+> **Fee formula — resolved in Phase 4, and the assumption here was wrong.**
+> Not `0.05 × min(p, 1−p) × shares` but `shares × rate × [p(1−p)]^exponent`.
+> That is 2× smaller at the midpoint, so the no-trade band protecting a resting
+> quote is 1.25¢, not 2.5¢. Makers pay nothing at all. Note also that
+> `maker_base_fee`/`taker_base_fee` read 1000 in every market regardless of
+> category and carry no information — the live source is gamma's `feeSchedule`.
+> See `src/weatherbot/fees.py`.
 
 ---
 
