@@ -56,12 +56,20 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
-          if git diff --quiet -- archive/; then
+          # Stage FIRST, then test the staged diff. `git diff` only sees tracked
+          # files, and every new harvest record is untracked -- testing it before
+          # staging reports "no changes" on a successful harvest and exits green
+          # without ever committing. That silently lost every run.
+          git add -A archive/
+
+          if git diff --cached --quiet -- archive/; then
             echo "No new records — nothing to commit."
             exit 0
           fi
 
-          git add archive/
+          echo "Staged records:"
+          git diff --cached --name-only -- archive/ | sed 's/^/  /'
+
           git commit -m "Harvest forecasts $(date -u +'%Y-%m-%dT%H:%MZ')"
 
           # Another scheduled run may have pushed while this one was working.
