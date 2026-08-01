@@ -34,6 +34,11 @@ UTC = ZoneInfo("UTC")
 IEM_ASOS_URL = "https://mesonet.agron.iastate.edu/cgi-bin/request/asos.py"
 GAMMA_API = "https://gamma-api.polymarket.com"
 
+# The order book API. Its price history is retained for a rolling ~31 days and
+# then deleted, so quoted prices are as perishable as the ensembles and must be
+# archived on a schedule. See sources/clob.py.
+CLOB_API = "https://clob.polymarket.com"
+
 # Weather Underground is the actual settlement source. Its ingest occasionally
 # drops individual METARs, so its daily maximum is not always equal to the raw
 # METAR maximum -- see sources/wunderground.py. Train and validate on this.
@@ -73,6 +78,8 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 #             the scripts, so gitignored.
 ARCHIVE_DIR = REPO_ROOT / "archive"
 FORECAST_ARCHIVE_DIR = ARCHIVE_DIR / "forecasts"
+# Quoted prices. Also irreplaceable, for the same reason and on a ~31-day fuse.
+PRICE_ARCHIVE_DIR = ARCHIVE_DIR / "prices"
 
 DATA_DIR = REPO_ROOT / "data"
 RAW_DIR = DATA_DIR / "raw"
@@ -91,5 +98,6 @@ def ensure_dirs() -> None:
         PROCESSED_DIR,
         ARCHIVE_DIR,
         FORECAST_ARCHIVE_DIR,
+        PRICE_ARCHIVE_DIR,
     ):
         d.mkdir(parents=True, exist_ok=True)
