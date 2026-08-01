@@ -123,5 +123,14 @@ Two things worth knowing before using the data:
   calendar day. They match the true daily maximum on ~90% of days. They are a
   feature, not the target.
 
-**Next — Phase 2:** feature table joining forecasts to settled outcomes, then
-Model A (climatology) as the benchmark everything later must beat.
+**Phase 2 — baselines: established.** The benchmark is **RPS 0.11760** on 207
+held-out settled markets. See [`docs/PHASE2_BASELINE.md`](docs/PHASE2_BASELINE.md).
+
+The surprise: plain temperature climatology scores **worse than uniform**.
+Polymarket centres each bucket window on its own forecast — outcomes land in an
+end bucket only 5.8% of the time — so a day-of-year model piles mass on the wrong
+tail. The benchmark is instead *positional* climatology, which models where in
+the window outcomes land and beats uniform by 12.9% using no weather data at all.
+
+**Next — Model B:** map real forecasts to a temperature distribution and beat
+RPS 0.11760.

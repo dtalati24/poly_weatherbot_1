@@ -20,6 +20,8 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
 from weatherbot.config import (
     IEM_ASOS_URL,
@@ -33,7 +35,30 @@ from weatherbot.observation import Observation
 
 MISSING_TOKENS = {"M", "", "None", "null"}
 
-__all__ = ["Observation", "fetch_observations", "fetch_raw_csv", "parse_csv"]
+__all__ = [
+    "Observation",
+    "fetch_observations",
+    "fetch_raw_csv",
+    "fetch_year",
+    "parse_csv",
+]
+
+# IEM returns 429 under sustained use. Backoff is generous because a long
+# backfill is not urgent, whereas being blocked mid-run is disruptive.
+_RETRY = Retry(
+    total=6,
+    connect=6,
+    read=6,
+    status=6,
+    backoff_factor=3.0,
+    status_forcelist=(408, 429, 500, 502, 503, 504),
+    allowed_methods=frozenset({"GET"}),
+    respect_retry_after_header=True,
+    raise_on_status=False,
+)
+
+_SESSION = requests.Session()
+_SESSION.mount("https://", HTTPAdapter(max_retries=_RETRY, pool_maxsize=2))
 
 
 def _to_float(value: str | None) -> float | None:
@@ -91,7 +116,7 @@ def fetch_raw_csv(
         "report_type": [REPORT_TYPE_ROUTINE, REPORT_TYPE_SPECIAL],
     }
 
-    response = requests.get(IEM_ASOS_URL, params=params, timeout=timeout)
+    response = _SESSION.get(IEM_ASOS_URL, params=params, timeout=timeout)
     response.raise_for_status()
     text = response.text
 
@@ -134,40 +159,85 @@ def parse_csv(text: str) -> list[Observation]:
     return observations
 
 
+# How stale the current year's cache may get before it is refetched. Past years
+# are immutable and cached forever; the current year keeps growing.
+CURRENT_YEAR_MAX_AGE_SECONDS = 6 * 3600
+
+
+def fetch_year(
+    station: str, year: int, *, use_cache: bool = True, retries: int = 4
+) -> list[Observation]:
+    """Fetch one whole calendar year, cached under a year-keyed filename.
+
+    Chunking on calendar years rather than on the caller's requested range is
+    deliberate. Caching by arbitrary chunk boundaries means a query starting one
+    day earlier misses every cached file and re-downloads the entire history --
+    which is exactly how this hit an IEM rate limit. Year keys make the cache
+    reusable across any requested range.
+
+    The current year is refetched once its cache goes stale, since it is still
+    being appended to; completed years are treated as immutable.
+    """
+    path = OBS_DIR / f"{station}_{year}.csv"
+
+    if use_cache and path.exists():
+        is_current = year >= date.today().year
+        age = time.time() - path.stat().st_mtime if is_current else 0.0
+        if not is_current or age < CURRENT_YEAR_MAX_AGE_SECONDS:
+            return parse_csv(path.read_text(encoding="utf-8"))
+
+    # urllib3's Retry cannot recover a connection reset that happens mid-body,
+    # which is how IEM fails under load, so retry at the application level too.
+    last_error: Exception | None = None
+    for attempt in range(retries):
+        try:
+            text = fetch_raw_csv(
+                station, date(year, 1, 1), date(year + 1, 1, 1), use_cache=False
+            )
+            break
+        except requests.RequestException as exc:
+            last_error = exc
+            if attempt == retries - 1:
+                if path.exists():
+                    # Prefer stale data over no data.
+                    return parse_csv(path.read_text(encoding="utf-8"))
+                raise
+            time.sleep(5.0 * (attempt + 1))
+    else:  # pragma: no cover - loop always breaks or raises
+        raise RuntimeError(f"unreachable: {last_error}")
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text, encoding="utf-8")
+    return parse_csv(text)
+
+
 def fetch_observations(
     station: str,
     start: date,
     end: date,
     *,
     use_cache: bool = True,
-    chunk_days: int = 366,
-    polite_delay: float = 1.0,
+    polite_delay: float = 2.0,
 ) -> list[Observation]:
-    """Fetch observations over an arbitrary range, chunking long requests.
-
-    Long ranges are split so no single IEM request times out, and each chunk is
-    cached independently so an interrupted backfill resumes cheaply.
-    """
+    """Fetch observations for [start, end), assembled from year-sized caches."""
     if end <= start:
         raise ValueError(f"end ({end}) must be after start ({start})")
 
     all_obs: list[Observation] = []
     seen: set[tuple[str, datetime]] = set()
 
-    cursor = start
-    first = True
-    while cursor < end:
-        chunk_end = min(cursor + timedelta(days=chunk_days), end)
-        if not first and polite_delay:
+    for index, year in enumerate(range(start.year, end.year + 1)):
+        path = OBS_DIR / f"{station}_{year}.csv"
+        # Only rate-limit real network calls.
+        if index and polite_delay and not path.exists():
             time.sleep(polite_delay)
-        text = fetch_raw_csv(station, cursor, chunk_end, use_cache=use_cache)
-        for obs in parse_csv(text):
+        for obs in fetch_year(station, year, use_cache=use_cache):
+            if not (start <= obs.valid_utc.date() < end):
+                continue
             key = (obs.station, obs.valid_utc)
             if key not in seen:
                 seen.add(key)
                 all_obs.append(obs)
-        cursor = chunk_end
-        first = False
 
     all_obs.sort(key=lambda o: o.valid_utc)
     return all_obs
