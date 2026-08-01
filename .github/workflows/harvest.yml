@@ -18,7 +18,7 @@ on:
       forecast_days:
         description: "Forecast horizon in days"
         required: false
-        default: "7"
+        default: "10"
 
 permissions:
   contents: write
@@ -48,7 +48,11 @@ jobs:
         run: pip install --quiet requests netCDF4 numpy
 
       - name: Harvest forecasts
-        run: python scripts/harvest_forecasts.py --forecast-days "${{ github.event.inputs.forecast_days || '7' }}"
+        # 10 days captures GFS (10.4 d) and MOGREPS-G (10.3 d) in full. Beyond
+        # that only ECMWF IFS/AIFS and GEM still carry data, so the extra bytes
+        # would be mostly null padding. Horizon data is unreplayable, so this
+        # errs generous rather than minimal.
+        run: python scripts/harvest_forecasts.py --forecast-days "${{ github.event.inputs.forecast_days || '10' }}"
 
       - name: Commit and push archive
         run: |
