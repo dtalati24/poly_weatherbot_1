@@ -1,8 +1,13 @@
 # Phase 0 (settlement reconstruction) needs only requests.
 requests>=2.31
 
-# Used from Phase 1 onward (feature tables, model fitting).
+# Phase 1 harvesting. netCDF4 is required to read the Met Office IMPROVER spot
+# percentile files, which are NetCDF4/HDF5 -- not GRIB, so cfgrib is not needed
+# (and would be painful to install on Windows).
+netCDF4>=1.6
 numpy>=1.26
+
+# Used from Phase 2 onward (feature tables, model fitting).
 pandas>=2.0
 
 # Development

@@ -64,6 +64,16 @@ MARKET_SLUG_PREFIX = "highest-temperature-in-london-on"
 
 # --- Paths --------------------------------------------------------------
 REPO_ROOT = Path(__file__).resolve().parents[2]
+
+# Two storage roots, and the distinction matters:
+#   archive/  Harvested forecasts. IRREPLACEABLE -- ensemble forecasts cannot be
+#             re-fetched for a past date, so a lost file is lost training data.
+#             Tracked in git and committed by the scheduled harvester.
+#   data/     Observation and market caches. Fully reproducible by re-running
+#             the scripts, so gitignored.
+ARCHIVE_DIR = REPO_ROOT / "archive"
+FORECAST_ARCHIVE_DIR = ARCHIVE_DIR / "forecasts"
+
 DATA_DIR = REPO_ROOT / "data"
 RAW_DIR = DATA_DIR / "raw"
 OBS_DIR = RAW_DIR / "observations"
@@ -72,6 +82,14 @@ PROCESSED_DIR = DATA_DIR / "processed"
 
 
 def ensure_dirs() -> None:
-    """Create the data directory tree if it does not already exist."""
-    for d in (DATA_DIR, RAW_DIR, OBS_DIR, MARKETS_DIR, PROCESSED_DIR):
+    """Create the data and archive directory trees if they do not exist."""
+    for d in (
+        DATA_DIR,
+        RAW_DIR,
+        OBS_DIR,
+        MARKETS_DIR,
+        PROCESSED_DIR,
+        ARCHIVE_DIR,
+        FORECAST_ARCHIVE_DIR,
+    ):
         d.mkdir(parents=True, exist_ok=True)

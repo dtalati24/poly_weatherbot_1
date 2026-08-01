@@ -1,0 +1,79 @@
+name: Harvest forecasts
+
+# Ensemble forecasts cannot be fetched for a past date. Open-Meteo's ensemble
+# endpoint serves only ~4 days of history no matter what you ask for, so a run
+# that does not happen is training data lost permanently. This workflow is the
+# most important thing in the repository.
+#
+# Four runs a day, timed a few hours after the 00/06/12/18Z model cycles so the
+# data has landed. GitHub's scheduler is best-effort and can be delayed under
+# load, which is fine -- records are stamped with the actual harvest time, not
+# the scheduled one, and reruns inside the same UTC hour are idempotent.
+
+on:
+  schedule:
+    - cron: "0 3,9,15,21 * * *"
+  workflow_dispatch:
+    inputs:
+      forecast_days:
+        description: "Forecast horizon in days"
+        required: false
+        default: "7"
+
+permissions:
+  contents: write
+
+# Never cancel a harvest in flight -- a partially written run is worse than a
+# late one. Queue instead.
+concurrency:
+  group: harvest-forecasts
+  cancel-in-progress: false
+
+jobs:
+  harvest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        # netCDF4 + numpy are needed for the Met Office IMPROVER spot files.
+        run: pip install --quiet requests netCDF4 numpy
+
+      - name: Harvest forecasts
+        run: python scripts/harvest_forecasts.py --forecast-days "${{ github.event.inputs.forecast_days || '7' }}"
+
+      - name: Commit and push archive
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          if git diff --quiet -- archive/; then
+            echo "No new records — nothing to commit."
+            exit 0
+          fi
+
+          git add archive/
+          git commit -m "Harvest forecasts $(date -u +'%Y-%m-%dT%H:%MZ')"
+
+          # Another scheduled run may have pushed while this one was working.
+          # Rebase and retry rather than failing and dropping the record.
+          for attempt in 1 2 3; do
+            if git push; then
+              echo "Pushed on attempt $attempt."
+              exit 0
+            fi
+            echo "Push failed (attempt $attempt); rebasing on origin."
+            git pull --rebase --autostash origin "${GITHUB_REF_NAME}"
+          done
+
+          echo "Could not push after 3 attempts." >&2
+          exit 1

@@ -101,15 +101,27 @@ first run of any script is the slow one.
 | Weather Underground | **Settlement source.** Train and validate here | Public JSON endpoint behind the History page |
 | IEM ASOS archive | Long raw-METAR history; divergence signal | Free, no key |
 | Polymarket Gamma API | Settled markets, buckets, volumes | Free, no key |
-| Open-Meteo ensembles | ECMWF IFS/AIFS, GEFS, ICON (Phase 1) | Free, no key |
-| Met Office DataHub | MOGREPS-UK 2.2 km (Phase 1) | Free tier |
+| Open-Meteo ensembles | ECMWF IFS/AIFS, GEFS, ICON, MOGREPS-G — 8 models | Free, no key |
+| Open-Meteo historical forecast | Lead-resolved deterministic backfill to 2022 | Free, no key |
+| Met Office IMPROVER spot percentiles | Calibrated Tmax distribution, MOGREPS-UK blended, ~305 m from EGLC | Free, **no key** (AWS Open Data) |
 
 ## Status
 
-Phase 0 (settlement reconstruction) is complete — see
-[`docs/PHASE0_FINDINGS.md`](docs/PHASE0_FINDINGS.md) for the verified results
-and the traps found along the way.
+**Phase 0 — settlement reconstruction: complete.** 503/504 settled markets
+reproduced. See [`docs/PHASE0_FINDINGS.md`](docs/PHASE0_FINDINGS.md).
 
-Next up is Phase 1: the forecast harvester. MOGREPS-UK on AWS is a **30-day
-rolling archive** and most Open-Meteo model archives only begin in April 2026,
-so every day without harvesting is training data permanently lost.
+**Phase 1 — forecast pipeline: live.** 8 ensembles + Met Office IMPROVER spot
+percentiles harvested 4x daily via GitHub Actions, plus a lead-resolved
+deterministic backfill to 2022. See [`docs/PHASE1_DATA.md`](docs/PHASE1_DATA.md).
+
+Two things worth knowing before using the data:
+
+- Ensemble history **cannot** be backfilled (~4 days available regardless of
+  what you request), so the harvester must keep running. Deterministic history
+  *can*, at known lead times, which is what makes training possible today.
+- The Met Office percentiles are maxima over a **12-hour window**, not the local
+  calendar day. They match the true daily maximum on ~90% of days. They are a
+  feature, not the target.
+
+**Next — Phase 2:** feature table joining forecasts to settled outcomes, then
+Model A (climatology) as the benchmark everything later must beat.
