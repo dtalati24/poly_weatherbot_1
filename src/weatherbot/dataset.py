@@ -115,6 +115,29 @@ def forecast_daily_max(
     return {day: value for day, value in maxima.items() if counts.get(day, 0) >= min_hours}
 
 
+def remaining_forecast_max(
+    hourly: dict[str, float], day: date, from_hour: float
+) -> float | None:
+    """Highest forecast hourly temperature still to come on `day`.
+
+    The intraday counterpart to `forecast_daily_max`: once part of the day has
+    happened, the forecast for the hours *already past* is no longer a
+    prediction and including it would double-count what the running maximum
+    already knows.
+
+    Timestamps in the archive are local wall-clock (see the module docstring),
+    so the hour in the key is directly comparable to a London-local hour.
+    Returns None when no forecast hours remain.
+    """
+    prefix = day.isoformat()
+    values = [
+        value
+        for stamp, value in hourly.items()
+        if stamp.startswith(prefix) and int(stamp[11:13]) >= from_hour
+    ]
+    return max(values) if values else None
+
+
 def build_training_pairs(
     forecasts: dict[date, float],
     observations: dict[date, int],

@@ -50,6 +50,7 @@ src/weatherbot/
                          interpretations are enumerated, not assumed.
   fees.py                Fee and rebate arithmetic. The published formula, not
                          the one assumed in PLAN.md.
+  intraday.py            Running maximum and remaining maximum, leakage-safe.
   market.py              Archived prices -> the market's own distribution.
   priceharvest.py        Price archive: one record per market day.
   sources/
@@ -66,6 +67,7 @@ scripts/
   analyze_cadence.py     Reporting cadence, curfew and truncation checks.
   harvest_prices.py      Archive quoted prices (--all backfills everything).
   analyze_prices.py      Phase 4 gate: does the model beat the market?
+  evaluate_model_d.py    Phase 5: the nowcast vs the market, hour by hour.
   blend_significance.py  Does a model+market blend survive out-of-sample?
 
 tests/                   Unit tests for the correctness-critical paths.
@@ -186,8 +188,28 @@ Three things this corrects:
   `rate × min(p, 1−p) × shares`. The no-trade band protecting a resting quote is
   1.25¢ at the midpoint, half what the plan assumed.
 
-**Next:** the benchmark is now RPS against the market at the same instant —
-0.06731 at lead 1 is the number to beat. Model D (intraday nowcast) is the best
-remaining candidate, because it is the only one whose information is *timely*
-rather than merely accurate. Then Model C (ensemble spread) and multi-model
-blending. The quoter waits until something beats the mid.
+**Phase 5 — Model D: beats every previous model, still loses to the market.**
+The intraday nowcast, scored hour by hour through the settlement day. See
+[`docs/PHASE5_MODEL_D.md`](docs/PHASE5_MODEL_D.md).
+
+| local hour | 09 | 13 | 17 | 19 | 21 |
+|---|---|---|---|---|---|
+| market | **0.05522** | **0.04404** | **0.00962** | **0.00282** | 0.00137 |
+| best nowcast | 0.08077 | 0.06491 | 0.01461 | 0.00344 | **0.00003** |
+| vs market | −46.3% | −47.4% | −51.8% | −21.8% | **+97.8%** |
+
+The structure works: `Y = max(M, X)` is an identity, the running maximum fixes
+the answer on 93% of days by 17:00, and the nowcast beats Model B at *every*
+hour. But the market has the same observations, and is already doing the same
+subtraction — the probability it leaves on buckets the running maximum has ruled
+out is a median of **0.2¢**. The 21:00 win is real in RPS and worth nothing in
+cents.
+
+**Next:** the market prices this contract well at every horizon measured so far
+— two days out, one day out, and hour by hour on the day. The open question is
+no longer accuracy but **latency**: every comparison is at a fixed instant, so
+if the market reacts to a new observation more slowly than we do, the edge lives
+in the minutes after each METAR and no hourly comparison can see it. After that:
+season-conditioned lock-in (winter evenings are the known weak spot), Model C
+(ensemble spread), and multi-model blending. The quoter waits until something
+beats the mid.

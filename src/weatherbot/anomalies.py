@@ -53,9 +53,20 @@ KNOWN_SETTLEMENT_ANOMALIES: dict[date, SettlementAnomaly] = {
             note=(
                 "WU's history endpoint returns a broken 2-observation block for "
                 "this date (00:20Z and 00:50Z only). IEM has the full 46 "
-                "observations peaking at 17C. Isolated to this one day -- the "
-                "other spring-forward date in range (2026-03-29) returns 46 "
-                "observations normally, so this is not a DST bug."
+                "observations peaking at 17C. "
+                "CORRECTED (Phase 5): this IS a DST bug. The original note "
+                "called it isolated on the strength of two spring-forward days; "
+                "widening to five shows 2022-03-27, 2024-03-31 and 2025-03-30 "
+                "all return exactly 2 observations, truncated at the 01:00Z "
+                "transition, and only 2026-03-29 is clean. 2023-03-26 is also "
+                "truncated but escapes the mismatch list because its maximum "
+                "happened to fall in the first two observations. Reproducible "
+                "on re-fetch, so it is a permanent archive defect. Fall-back "
+                "Sundays are also affected more mildly: WU returns 46 "
+                "observations against IEM's 50, silently dropping the repeated "
+                "local hour. Consequence: WU-derived labels are wrong by 3-6C "
+                "on spring-forward Sundays and must not be trained on -- screen "
+                "on block size (< 40 observations) and fall back to IEM."
             ),
         ),
         SettlementAnomaly(
