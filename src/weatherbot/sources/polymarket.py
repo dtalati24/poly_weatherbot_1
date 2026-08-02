@@ -81,8 +81,25 @@ class Bucket:
         return self.kind in (BucketKind.AT_OR_BELOW, BucketKind.AT_OR_ABOVE)
 
     def contains(self, tmax_c: int) -> bool:
-        """Does an integer-Celsius reading fall in this bucket?"""
+        """Does an integer-Celsius reading fall in this bucket?
+
+        For a Fahrenheit bucket this converts, and the conversion starts from an
+        already-rounded integer Celsius value. That is correct only where the
+        station reports whole degrees Celsius, which is true at EGLC and NOT
+        true at US stations -- their METARs carry tenths in the remark T-group.
+        Rounding to whole C first and then converting double-rounds, and lands
+        in the wrong bucket on 28% of LA days. Use `holds` there.
+        """
         value = tmax_c if self.unit == "C" else celsius_to_fahrenheit_int(tmax_c)
+        return self.holds(value)
+
+    def holds(self, value: int) -> bool:
+        """Membership test for a value already in this bucket's own unit.
+
+        No conversion and no rounding, so it cannot double-round. This is the
+        right entry point whenever the caller has already reduced observations
+        to the settled integer.
+        """
         if self.kind is BucketKind.EXACT:
             return value == self.low
         if self.kind is BucketKind.RANGE:
@@ -146,9 +163,14 @@ def parse_bucket(label: str) -> Bucket | None:
     return Bucket(label=text, kind=kind, unit=unit, low=value, high=value)
 
 
-def slug_candidates(day: date) -> list[str]:
-    """Candidate event slugs for a date, most specific first."""
-    stem = f"{MARKET_SLUG_PREFIX}-{MONTHS[day.month - 1]}-{day.day}"
+def slug_candidates(day: date, prefix: str = MARKET_SLUG_PREFIX) -> list[str]:
+    """Candidate event slugs for a date, most specific first.
+
+    `prefix` selects the city. The unsuffixed stem is tried second because it
+    can belong to a different year's market entirely -- callers must still
+    verify with `event_target_date`.
+    """
+    stem = f"{prefix}-{MONTHS[day.month - 1]}-{day.day}"
     return [f"{stem}-{day.year}", stem]
 
 
@@ -244,10 +266,14 @@ def parse_resolved_event(event: dict, day: date) -> ResolvedMarket | None:
 
 
 def fetch_resolved_market(
-    day: date, *, use_cache: bool = True, polite_delay: float = 0.25
+    day: date,
+    *,
+    use_cache: bool = True,
+    polite_delay: float = 0.25,
+    prefix: str = MARKET_SLUG_PREFIX,
 ) -> ResolvedMarket | None:
-    """Find the settled London market for `day`, verifying it is really that day."""
-    for slug in slug_candidates(day):
+    """Find the settled market for `day`, verifying it is really that day."""
+    for slug in slug_candidates(day, prefix):
         # Only rate-limit real network calls; replaying the cache should be fast.
         was_cached = use_cache and _cache_path(slug).exists()
         event = fetch_event(slug, use_cache=use_cache)
@@ -265,13 +291,14 @@ def fetch_resolved_market(
 
 
 def fetch_resolved_range(
-    start: date, end: date, *, use_cache: bool = True
+    start: date, end: date, *, use_cache: bool = True,
+    prefix: str = MARKET_SLUG_PREFIX,
 ) -> list[ResolvedMarket]:
-    """Collect every settled London market in [start, end)."""
+    """Collect every settled market in [start, end)."""
     out: list[ResolvedMarket] = []
     day = start
     while day < end:
-        market = fetch_resolved_market(day, use_cache=use_cache)
+        market = fetch_resolved_market(day, use_cache=use_cache, prefix=prefix)
         if market:
             out.append(market)
         day += timedelta(days=1)

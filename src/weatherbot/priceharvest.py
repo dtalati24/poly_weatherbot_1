@@ -25,6 +25,7 @@ from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from pathlib import Path
 
+from weatherbot.cities import LONDON, City
 from weatherbot.config import PRICE_ARCHIVE_DIR
 from weatherbot.sources import clob
 from weatherbot.sources.polymarket import (
@@ -32,6 +33,17 @@ from weatherbot.sources.polymarket import (
     fetch_event,
     slug_candidates,
 )
+
+
+def price_archive_root(city: City = LONDON, root: Path | None = None) -> Path:
+    """Archive root for a city.
+
+    London lives at the top of `archive/prices/` because it was archived before
+    this was multi-city and 536 committed files are not worth relocating for
+    tidiness. Every other city gets its own subdirectory.
+    """
+    base = root or PRICE_ARCHIVE_DIR
+    return base if city.key == LONDON.key else base / city.key
 
 # 1: 10-minute samples from `interval=max`, no coverage bounds. Superseded --
 #    that path silently truncated settled markets. See sources/clob.py.
@@ -64,10 +76,11 @@ class PriceHarvestResult:
         return "upgraded" if self.upgraded else "ok"
 
 
-def archive_path(day: date, root: Path | None = None) -> Path:
+def archive_path(
+    day: date, root: Path | None = None, city: City = LONDON
+) -> Path:
     """Where the price record for `day` belongs."""
-    root = root or PRICE_ARCHIVE_DIR
-    return root / day.strftime("%Y") / f"{day.isoformat()}.json.gz"
+    return price_archive_root(city, root) / day.strftime("%Y") / f"{day.isoformat()}.json.gz"
 
 
 def read_record(path: Path) -> dict:
@@ -124,13 +137,14 @@ def harvest_day(
     fidelity: int = clob.FINEST_FIDELITY_MINUTES,
     lookback_days: int = clob.LOOKBACK_DAYS,
     skip_existing: bool = False,
+    city: City = LONDON,
 ) -> PriceHarvestResult:
     """Harvest the full price path for one market day.
 
     Never raises; failures are returned so one bad day cannot abort a sweep of
     several hundred.
     """
-    path = archive_path(day, root)
+    path = archive_path(day, root, city)
     existing = read_record(path) if path.exists() else None
 
     if skip_existing and existing and existing.get("schema_version") == SCHEMA_VERSION:
@@ -144,7 +158,7 @@ def harvest_day(
         )
 
     event = None
-    for slug in slug_candidates(day):
+    for slug in slug_candidates(day, city.slug_prefix):
         try:
             candidate = fetch_event(slug, use_cache=True)
         except Exception as exc:  # noqa: BLE001 - one day must not abort the sweep
@@ -211,9 +225,11 @@ def harvest_day(
     )
 
 
-def load_day(day: date, root: Path | None = None) -> list[clob.OutcomeSeries]:
+def load_day(
+    day: date, root: Path | None = None, city: City = LONDON
+) -> list[clob.OutcomeSeries]:
     """Read an archived day back as typed series, or [] if not archived."""
-    path = archive_path(day, root)
+    path = archive_path(day, root, city)
     if not path.exists():
         return []
     record = read_record(path)
@@ -231,9 +247,9 @@ def load_day(day: date, root: Path | None = None) -> list[clob.OutcomeSeries]:
     ]
 
 
-def archived_days(root: Path | None = None) -> list[date]:
+def archived_days(root: Path | None = None, city: City = LONDON) -> list[date]:
     """Every market day present in the archive, ascending."""
-    root = root or PRICE_ARCHIVE_DIR
+    root = price_archive_root(city, root)
     if not root.exists():
         return []
     days = []

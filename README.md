@@ -50,6 +50,8 @@ src/weatherbot/
                          interpretations are enumerated, not assumed.
   fees.py                Fee and rebate arithmetic. The published formula, not
                          the one assumed in PLAN.md.
+  cities.py              Per-city station, timezone, slug prefix and unit.
+  crossvenue.py          Kalshi's distribution -> Polymarket's buckets.
   intraday.py            Running maximum and remaining maximum, leakage-safe.
   market.py              Archived prices -> the market's own distribution.
   priceharvest.py        Price archive: one record per market day.
@@ -58,6 +60,7 @@ src/weatherbot/
     iem.py               Raw METAR archive (decades of history, free).
     polymarket.py        Gamma API: settled markets, bucket parsing.
     clob.py              Order book API: 1-minute historical midpoints.
+    kalshi.py            Kalshi market data: 1-minute bid/ask candles.
   analysis/
     cadence.py           Observation cadence and truncation analysis.
 
@@ -68,6 +71,7 @@ scripts/
   harvest_prices.py      Archive quoted prices (--all backfills everything).
   analyze_prices.py      Phase 4 gate: does the model beat the market?
   evaluate_model_d.py    Phase 5: the nowcast vs the market, hour by hour.
+  evaluate_crossvenue.py Phase 6: is Kalshi a better fair value than Polymarket?
   blend_significance.py  Does a model+market blend survive out-of-sample?
 
 tests/                   Unit tests for the correctness-critical paths.
@@ -204,6 +208,30 @@ hour. But the market has the same observations, and is already doing the same
 subtraction — the probability it leaves on buckets the running maximum has ruled
 out is a median of **0.2¢**. The 21:00 win is real in RPS and worth nothing in
 cents.
+
+**Phase 6 — Kalshi as fair value: the venues settle on different numbers.**
+Kalshi runs the same LA contract on the same station (KLAX) with more volume, so
+its prices should have been a fair value to quote against Polymarket with — no
+forecasting required. See [`docs/PHASE6_CROSSVENUE.md`](docs/PHASE6_CROSSVENUE.md).
+
+| LA hour | n | Polymarket | Kalshi | Kalshi vs Poly |
+|---|---|---|---|---|
+| −6 | 35 | **0.03654** | 0.05168 | −41.5% |
+| 0 | 34 | **0.03543** | 0.05005 | −41.3% |
+| +9 | 29 | **0.03613** | 0.04274 | −18.3% |
+
+Kalshi settles on the NWS Climatological Report (ASOS 5-minute data); Polymarket
+settles on Weather Underground's METAR record, and KLAX reports hourly. So CLI
+catches peaks between our observations and is **never lower**: exact agreement
+60%, +1 °F 33%, +2 °F 7%. Late in the day Kalshi becomes confident about a value
+one bucket above the one Polymarket settles on. Correcting for the offset helps
+at every hour and is nowhere near enough — and Kalshi loses *most* on the days
+where the bucket mapping is exact, so the premise fails rather than the method.
+
+Two premises also died: Kalshi is **not** tighter (median spread 1¢, the same
+tick floor Polymarket sits on), and more volume in the wrong variable does not
+help. Left behind: a validated LA settlement reconstruction (**72/72, 100%**)
+and genuine multi-city support.
 
 **Next:** the market prices this contract well at every horizon measured so far
 — two days out, one day out, and hour by hour on the day. The open question is

@@ -29,6 +29,8 @@ from datetime import date, datetime
 from enum import Enum
 from itertools import product
 
+from zoneinfo import ZoneInfo
+
 from weatherbot.config import LOCAL_TZ, UTC
 from weatherbot.observation import Observation
 
@@ -61,6 +63,11 @@ class Strategy:
     boundary: DayBoundary = DayBoundary.LOCAL
     rounding: Rounding = Rounding.AS_REPORTED
     reports: ReportFilter = ReportFilter.ALL
+    # Which local day "LOCAL" means. Defaults to London for backwards
+    # compatibility with everything built before this was multi-city; pass a
+    # city's tz explicitly for anywhere else. Getting this wrong does not error,
+    # it silently shifts every observation near midnight into the wrong day.
+    tz: ZoneInfo = LOCAL_TZ
 
     def __str__(self) -> str:
         return f"{self.boundary.value}/{self.rounding.value}/{self.reports.value}"
@@ -116,9 +123,9 @@ def _round_half_up(value: float) -> int:
     return int(floor(value + 0.5)) if value >= 0 else -int(floor(-value + 0.5))
 
 
-def _day_of(obs: Observation, boundary: DayBoundary) -> date:
+def _day_of(obs: Observation, boundary: DayBoundary, tz: ZoneInfo = LOCAL_TZ) -> date:
     if boundary is DayBoundary.LOCAL:
-        return obs.valid_utc.astimezone(LOCAL_TZ).date()
+        return obs.valid_utc.astimezone(tz).date()
     return obs.valid_utc.astimezone(UTC).date()
 
 
@@ -140,7 +147,7 @@ def daily_maxima(
             continue
         if strategy.reports is ReportFilter.ROUTINE_ONLY and obs.is_special:
             continue
-        buckets.setdefault(_day_of(obs, strategy.boundary), []).append(obs)
+        buckets.setdefault(_day_of(obs, strategy.boundary, strategy.tz), []).append(obs)
 
     result: dict[date, DailyMax] = {}
     for day, day_obs in buckets.items():
@@ -156,6 +163,40 @@ def daily_maxima(
         )
 
     return result
+
+
+def daily_maxima_fahrenheit(
+    observations: list[Observation],
+    strategy: Strategy | None = None,
+) -> dict[date, int]:
+    """Daily maxima in whole Fahrenheit, for markets that settle in F.
+
+    Not `daily_maxima` followed by a conversion. That path rounds to whole
+    Celsius first, and at a US station -- where the METAR remark T-group carries
+    tenths -- the second rounding moves the answer. Validated against 72 settled
+    Los Angeles markets: this reduction reproduces 100% of them, while rounding
+    via whole Celsius reproduces 72%.
+
+    The maximum is taken over raw Celsius and converted once. That is exact
+    rather than convenient: Celsius-to-Fahrenheit is monotonic, so it commutes
+    with `max`, and converting per observation gives the same answer.
+    """
+    strategy = strategy or Strategy()
+
+    buckets: dict[date, list[float]] = {}
+    for obs in observations:
+        if obs.tmpc is None:
+            continue
+        if strategy.reports is ReportFilter.ROUTINE_ONLY and obs.is_special:
+            continue
+        buckets.setdefault(
+            _day_of(obs, strategy.boundary, strategy.tz), []
+        ).append(obs.tmpc)
+
+    return {
+        day: _round_half_up(max(values) * 9.0 / 5.0 + 32.0)
+        for day, values in buckets.items()
+    }
 
 
 def resolve(

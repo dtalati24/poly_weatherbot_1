@@ -29,6 +29,7 @@ from datetime import date, datetime, timedelta, timezone
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "src"))
 
+from weatherbot.cities import get as get_city  # noqa: E402
 from weatherbot.config import ensure_dirs  # noqa: E402
 from weatherbot.priceharvest import harvest_day  # noqa: E402
 
@@ -43,6 +44,7 @@ def _date(value: str) -> date:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--city", default="london")
     parser.add_argument("--days", type=int, default=7)
     parser.add_argument("--all", action="store_true", help="Backfill from the start.")
     parser.add_argument("--start", type=_date, default=None)
@@ -59,6 +61,7 @@ def parse_args() -> argparse.Namespace:
 def main() -> int:
     args = parse_args()
     ensure_dirs()
+    city = get_city(args.city)
 
     today = datetime.now(timezone.utc).date()
     if args.all:
@@ -76,7 +79,7 @@ def main() -> int:
     results = []
     day = start
     while day < end:
-        result = harvest_day(day, skip_existing=args.skip_existing)
+        result = harvest_day(day, skip_existing=args.skip_existing, city=city)
         results.append(result)
         # A day with no market is the normal case across a long backfill; only
         # print it if something interesting happened.
