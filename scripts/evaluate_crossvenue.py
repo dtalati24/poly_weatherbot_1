@@ -63,6 +63,9 @@ def parse_args() -> argparse.Namespace:
     # this window. Measured, not assumed -- see docs/PHASE6_CROSSVENUE.md.
     parser.add_argument("--hours", type=float, nargs="+",
                         default=[-18, -12, -6, 0, 6, 9, 12])
+    parser.add_argument("--fitted-offset", action="store_true",
+                        help="Fit the offset on the Kalshi window instead of "
+                             "using the 1288-day measured kernel.")
     parser.add_argument("--refresh", action="store_true",
                         help="Re-fetch Kalshi candles instead of using the cache.")
     return parser.parse_args()
@@ -161,9 +164,11 @@ def main() -> int:
         centre = (b.low + b.high) // 2 if b.kind is BucketKind.RANGE else b.low
         pairs.append((centre, truth))
 
-    offset = SourceOffset.fit(pairs)
+    offset = (SourceOffset.fit(pairs) if args.fitted_offset
+              else SourceOffset.measured_klax())
     test_days = set(common[cut:])
-    print(f"Offset  : fitted on {len(pairs)} days, mean {offset.mean:+.2f} F")
+    source = f"fitted on {len(pairs)} days" if args.fitted_offset else "measured, 1288 days"
+    print(f"Offset  : {source}, mean {offset.mean:+.2f} F")
     print("          " + str({k: round(v, 3) for k, v in sorted(offset.weights.items())}))
     print(f"Scoring : {len(test_days)} held-out days")
 

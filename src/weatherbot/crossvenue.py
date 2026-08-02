@@ -168,10 +168,22 @@ class SourceOffset:
     METAR record, and KLAX transmits hourly at :53. So CLI sees peaks that fall
     between METARs and is never lower:
 
-        exact agreement   60%
-        CLI higher by 1   33%
-        CLI higher by 2    7%
-        CLI lower          0%
+    Measured over 1288 days (2023-2026) of actual CLI and WU values -- not the
+    70-day Kalshi window, and not at bucket resolution:
+
+        CLI == WU          35.3%
+        CLI higher by 1    49.8%
+        CLI higher by 2    12.1%
+        CLI higher by 3+    2.6%
+        CLI lower           0.2%   (both explained by the day boundary)
+
+    Mean +0.833 F, sd 0.810, and stable year over year (mean +0.840 / +0.852 /
+    +0.823 / +0.804 for 2023-26). CLI equals the max of the 6-hourly RMK max
+    groups on 98.8% of days, so this is a pure sampling-density gap: CLI is
+    effectively the 5-minute ASOS max, WU is the max of hourly observations.
+
+    At Polymarket's 2 F bucket resolution that becomes: same bucket 61.3%, one
+    bucket lower 37.0%, two or more lower 1.6%.
 
     Ignoring this is fatal rather than merely imprecise. Kalshi becomes very
     confident late in the day about a value one bucket above the one Polymarket
@@ -180,6 +192,20 @@ class SourceOffset:
     """
 
     weights: dict[int, float]
+
+    @classmethod
+    def measured_klax(cls) -> "SourceOffset":
+        """The kernel measured over 1288 days, rather than fitted on 70.
+
+        Preferred over `fit` for LA: it is estimated from actual CLI and WU
+        values across all seasons and four years, where a fit on the Kalshi
+        window has to infer the gap from 2 F bucket centres over a warm-season
+        sample. The two disagree materially -- -0.83 F here against -0.47 F
+        fitted -- and the fitted one is biased toward zero precisely because
+        bucket containment hides sub-bucket differences.
+        """
+        return cls({0: 0.3533, -1: 0.4977, -2: 0.1211,
+                    -3: 0.0179, -4: 0.0086, 1: 0.0016})
 
     @classmethod
     def fit(cls, pairs: list[tuple[int, int]], smoothing: float = 0.5) -> "SourceOffset":

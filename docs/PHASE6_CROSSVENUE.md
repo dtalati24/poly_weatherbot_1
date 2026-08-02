@@ -19,11 +19,11 @@ buckets, against Polymarket's own midpoint, at the same instant:
 
 | LA hour | n | Polymarket | Kalshi (corrected) | Kalshi (raw) | Kalshi vs Poly |
 |---|---|---|---|---|---|
-| −12 | 35 | **0.03982** | 0.05627 | 0.06003 | −41.3% |
-| −6 | 35 | **0.03654** | 0.05168 | 0.05629 | −41.5% |
-| 0 | 34 | **0.03543** | 0.05005 | 0.05415 | −41.3% |
-| +6 | 30 | **0.03668** | 0.04451 | 0.05149 | −21.4% |
-| +9 | 29 | **0.03613** | 0.04274 | 0.05059 | −18.3% |
+| −12 | 35 | **0.03982** | 0.05479 | 0.06003 | −37.6% |
+| −6 | 35 | **0.03654** | 0.04970 | 0.05629 | −36.0% |
+| 0 | 34 | **0.03543** | 0.04839 | 0.05415 | −36.6% |
+| +6 | 30 | **0.03668** | 0.04102 | 0.05149 | −11.8% |
+| +9 | 29 | **0.03613** | 0.03903 | 0.05059 | −8.0% |
 
 ---
 
@@ -34,16 +34,36 @@ Kalshi settles on the **NWS Climatological Report**, which is computed from ASOS
 and KLAX transmits METARs **hourly at :53**. So CLI sees peaks that fall between
 our observations, and is never lower:
 
-| Kalshi settled − Polymarket settled | share |
-|---|---|
-| exact agreement | **60%** |
-| CLI higher by 1 °F | 33% |
-| CLI higher by 2 °F | 7% |
-| CLI lower | **0%** |
+Measured over **1288 days** (2023–2026) of actual CLI and WU values:
 
-That is the relationship, and it is systematic rather than noisy — a mean gap of
-about **+0.5 °F**, one-directional, driven by sampling frequency rather than by
-measurement disagreement.
+| CLI − WU | share |
+|---|---|
+| 0 (exact) | **35.3%** |
+| +1 °F | **49.8%** |
+| +2 °F | 12.1% |
+| +3 °F or more | 2.6% |
+| negative | 0.2% (both explained by the day boundary) |
+
+**Mean +0.833 °F, sd 0.810**, and stable year over year (+0.840 / +0.852 /
++0.823 / +0.804 for 2023–26). CLI equals the max of the 6-hourly METAR remark
+max-groups on **98.8%** of days, confirming this is a pure sampling-density gap:
+CLI is effectively the 5-minute ASOS max, WU is the max of hourly observations.
+
+At Polymarket's 2 °F bucket resolution that becomes **same bucket 61.3%, one
+bucket lower 37.0%, two or more lower 1.6%**.
+
+> **Correction.** An earlier version of this document reported "exact agreement
+> 60%, +1 °F 33%, +2 °F 7%", measured on the 70-day Kalshi window using *bucket
+> containment*. Those numbers are bucket-level, not degree-level, and were
+> mislabelled as °F differences. The bucket-level figure was right (61.3% here);
+> the degree-level agreement is **35.3%**, not 60%. The mean gap is +0.83 °F,
+> not +0.5 °F — a fit on bucket centres is biased toward zero precisely because
+> bucket containment hides sub-bucket differences.
+
+Both premises were verified from the venues' own settled data rather than their
+documentation alone: Kalshi's settled bucket contains CLI on **70/70** days (and
+WU on only 60%); Polymarket's settled bucket contains WU on **126/126** days
+(and CLI on only 58.7%, losing all 52 discriminating days).
 
 **It is also fatal to the idea.** Late in the day Kalshi becomes very confident
 about a value one bucket above the one Polymarket will settle on. The signature
@@ -77,13 +97,28 @@ So the results are reported split by alignment, and the split is decisive:
 
 | LA hour | aligned (exact mapping) | offset (assumed split) |
 |---|---|---|
-| −6 | −59.8% | −32.8% |
-| 0 | −80.4% | −23.9% |
-| +6 | −49.0% | −6.2% |
-| +9 | −53.6% | **+4.3%** |
+| −6 | −51.2% | −28.9% |
+| 0 | −73.7% | −20.1% |
+| +6 | −38.9% | **+3.0%** |
+| +9 | −42.5% | **+14.1%** |
 
 Kalshi loses **most** on the days where the mapping is exact and no assumption
 is involved. The re-binning is not the problem; the premise is.
+
+The reversal on offset days late in the session is not noise, and it has a
+mechanism. The gap between CLI and WU is one degree half the time, so whether it
+crosses a Polymarket bucket edge depends on the **parity** of CLI:
+
+| | P(same Polymarket bucket) |
+|---|---|
+| CLI odd (upper half of a bucket) | **84.3%** |
+| CLI even (on a bucket's lower edge) | **38.8%** |
+
+Kalshi's own 2 °F buckets normally hide that parity. But when Kalshi's ladder is
+offset from Polymarket's, Kalshi's edges fall *inside* Polymarket's buckets and
+the offset itself leaks sub-bucket position. That is a real effect rather than a
+fitting artifact — but n=16, it was found after the fact, and it appears at
+exactly the hours where the sample is thinnest. Recorded, not acted on.
 
 ## 3. Two premises that did not survive contact
 
@@ -120,7 +155,38 @@ Usable quoting window, measured: Kalshi lists at **D−1 07:00 LA** and its book
 collapse to one-sided after about **16:00 LA** on the settlement day. Outside
 that there is no fair value to read at all.
 
-## 5. Operational notes
+## 5. Two risks this surfaced that have nothing to do with Kalshi
+
+**Weather Underground breaks on every spring-forward day at KLAX too.** The same
+defect found for London. WU serves only the 00:53 and 01:53 observations and
+nothing else:
+
+| date | WU obs | WU max | CLI | METAR max | error |
+|---|---|---|---|---|---|
+| 2023-03-12 | 2 | 57 | 62 | 61 | −4 |
+| 2024-03-10 | 2 | 52 | 64 | 64 | **−12** |
+| 2025-03-09 | 2 | 51 | 71 | 70 | **−19** |
+| 2026-03-08 | 2 | 69 | 88 | 88 | **−19** |
+
+**And Polymarket settles on WU including its gaps** — verified on two smaller
+cases (2026-04-05: WU 15 observations, WU max 75, CLI 78, settled `74-75°F`;
+2026-04-29: 17 observations, WU 68, CLI 70, settled `68-69°F`). The LA series
+began 2026-03-24, so no market has yet spanned a spring-forward day and how
+Polymarket would resolve one is **unknown**. **2027-03-14 is a live, dated tail
+risk** on a market whose resolution source would be showing a ~52 °F high on a
+64 °F day. A further 15 partial-gap days cluster in April–May 2026, suggesting
+WU ingest reliability has recently degraded.
+
+**Kalshi's settlement value is knowable hours before it settles.** Since CLI is
+the max of the 6-hourly METAR remark max-groups on 98.8% of days, and the 00Z
+METAR (~17:00 PDT) carries the group covering 11:00–16:00 PDT, the free live
+METAR stream essentially reveals CLI before the Kalshi market resolves. That is
+a *Kalshi-side* edge and outside the scope chosen here (signal-only, quote on
+Polymarket), but it is the most interesting thing this phase turned up and it
+does not help predict Polymarket — whose settlement is the hourly-observation
+max, which we already observe directly.
+
+## 6. Operational notes
 
 - **Kalshi history is a 70-day rolling purge**, exchange-wide rather than
   series-specific: `KXHIGHLAX`, `KXHIGHNY`, `KXHIGHCHI` and `KXHIGHMIA` all
@@ -135,7 +201,7 @@ that there is no fair value to read at all.
   total at ratio 1.0000 for all 60 finalized tickers. The Polymarket
   `interval=max` failure mode does not reproduce here.
 
-## 6. What Phase 6 did leave behind
+## 7. What Phase 6 did leave behind
 
 A correct LA settlement reconstruction, which is reusable and was validated the
 same way London's was:
@@ -157,7 +223,7 @@ what `Bucket.contains` does, correctly, for London — double-rounds:
 easy one. The project is now genuinely multi-city (`weatherbot.cities`), with
 per-city timezone, slug prefix, station and unit.
 
-## 7. Reproducing
+## 8. Reproducing
 
 ```bash
 py scripts/harvest_prices.py --city los-angeles --start 2026-05-24 --end 2026-08-02

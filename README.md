@@ -216,14 +216,16 @@ forecasting required. See [`docs/PHASE6_CROSSVENUE.md`](docs/PHASE6_CROSSVENUE.m
 
 | LA hour | n | Polymarket | Kalshi | Kalshi vs Poly |
 |---|---|---|---|---|
-| −6 | 35 | **0.03654** | 0.05168 | −41.5% |
-| 0 | 34 | **0.03543** | 0.05005 | −41.3% |
-| +9 | 29 | **0.03613** | 0.04274 | −18.3% |
+| −6 | 35 | **0.03654** | 0.04970 | −36.0% |
+| 0 | 34 | **0.03543** | 0.04839 | −36.6% |
+| +9 | 29 | **0.03613** | 0.03903 | −8.0% |
 
 Kalshi settles on the NWS Climatological Report (ASOS 5-minute data); Polymarket
 settles on Weather Underground's METAR record, and KLAX reports hourly. So CLI
-catches peaks between our observations and is **never lower**: exact agreement
-60%, +1 °F 33%, +2 °F 7%. Late in the day Kalshi becomes confident about a value
+catches peaks between our observations and is almost never lower — measured over
+**1288 days**: exact 35.3%, +1 °F 49.8%, +2 °F 12.1%, mean **+0.83 °F**. At
+Polymarket's 2 °F buckets that is a different bucket 38.7% of the time. Late in
+the day Kalshi becomes confident about a value
 one bucket above the one Polymarket settles on. Correcting for the offset helps
 at every hour and is nowhere near enough — and Kalshi loses *most* on the days
 where the bucket mapping is exact, so the premise fails rather than the method.
